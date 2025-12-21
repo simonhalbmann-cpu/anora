@@ -1,0 +1,24 @@
+# Compiled JavaScript files
+lib/**/*.js
+lib/**/*.js.map
+
+# TypeScript v1 declaration files
+typings/
+
+# Node.js dependency directory
+node_modules/
+
+*.local 
+# --- local junk files (accidental) ---
+
+15000
+${m.role
+d.data()
+doc
+f.type
+firebase
+kaufvertrag_request.json
+letzte
+normale
+q.includes(k))
+{
