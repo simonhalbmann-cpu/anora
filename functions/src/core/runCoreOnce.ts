@@ -1,0 +1,408 @@
+// functions/src/core/runCoreOnce.ts
+/**
+ * PHASE 6.1 – Pure Core Entry
+ * - Pure: no Firestore, no writes, no side effects
+ * - Deterministic: same input => same output
+ *
+ * Pipeline:
+ * text -> rawEvent (in-memory) -> extractors -> validatedFacts
+ * -> factsDiff (new/ignored) -> haltungDelta -> intervention
+ */
+
+import { dayBucketUTC, sha256 } from "./rawEvents/hash";
+import type { RawEventDoc } from "./rawEvents/types";
+
+import { buildFactId } from "./facts/factId";
+import { normalizeFactValueByLocale } from "./facts/locale";
+import { normalizeFactKey } from "./facts/semantic";
+import type { FactInput, ValidityWindow } from "./facts/types";
+
+import { detectHaltungLearningEventFromMessage } from "./haltung/detect";
+import { deriveHaltungPatchFromEvent } from "./haltung/learn";
+import type { HaltungTriggerResult } from "./haltung/triggers";
+import { computeHaltungTriggersFromMessage } from "./haltung/triggers";
+import type { CoreHaltungV1 } from "./haltung/types";
+
+import { computeCoreInterventionV1 } from "./interventions/controller";
+import type { CoreInterventionV1 } from "./interventions/types";
+
+import { getExtractor, listExtractors } from "./facts/registry";
+import { toExtractorInputV1 } from "./runner/extractorInput";
+
+import { mapIdFromFingerprint, normalizeFingerprint } from "./entities/fingerprint";
+
+// -----------------------
+// Types
+// -----------------------
+
+export type RunCoreOnceInput = {
+  userId: string;
+  text: string;
+
+  state?: {
+  locale?: string; // default: "de-DE"
+  facts?: {
+    factId: string;
+    entityId: string;
+    domain: string;
+    key: string;
+    value: any;
+    validity?: { from?: number; to?: number };
+    meta?: Record<string, any>;
+  }[];
+  haltung?: CoreHaltungV1;
+};
+
+  // optional: allow limiting extractors; [] means "none"
+  extractorIds?: string[];
+};
+
+export type RunCoreOnceOutput = {
+  rawEvent: {
+    rawEventId: string;
+    doc: RawEventDoc;
+  };
+
+  validatedFacts: {
+    factId: string;
+
+    entityId: string;
+    entityFingerprint?: string;
+    entityDomain?: string;
+    entityType?: string;
+
+    domain: string;
+    key: string;
+    value: any;
+
+    validity?: { from?: number; to?: number };
+    meta?: Record<string, any>;
+
+    source?: string;
+    sourceRef?: string;
+    conflict?: boolean;
+  }[];
+
+  factsDiff: {
+    new: string[];
+    ignored: string[];
+  };
+
+  haltungDelta: {
+    before: CoreHaltungV1;
+    after: CoreHaltungV1;
+    patch: Partial<Omit<CoreHaltungV1, "version" | "updatedAt">>;
+    learningEvent: null | { type: string; strength?: number };
+    triggers: HaltungTriggerResult;
+  };
+
+  intervention: CoreInterventionV1;
+
+  effects: {
+    writesPlanned: false;
+  };
+
+  debug?: Record<string, any>;
+};
+
+// -----------------------
+// Helpers (pure)
+// -----------------------
+
+function deterministicDefaultHaltungV1(): CoreHaltungV1 {
+  // Same defaults as defaultCoreHaltungV1(), but with updatedAt=0 for determinism.
+  return {
+    version: 1,
+    directness: 0.5,
+    interventionDepth: 0.5,
+    patience: 0.5,
+    escalationThreshold: 0.7,
+    reflectionLevel: 0.5,
+    updatedAt: 0,
+  };
+}
+
+function clamp01(n: any, fallback: number): number {
+  const x = typeof n === "number" && Number.isFinite(n) ? n : fallback;
+  return Math.max(0, Math.min(1, x));
+}
+
+function normalizeHaltungPure(h: any): CoreHaltungV1 {
+  const base = deterministicDefaultHaltungV1();
+  if (!h || typeof h !== "object") return base;
+
+  return {
+    version: 1,
+    directness: clamp01(h.directness, base.directness),
+    interventionDepth: clamp01(h.interventionDepth, base.interventionDepth),
+    patience: clamp01(h.patience, base.patience),
+    escalationThreshold: clamp01(h.escalationThreshold, base.escalationThreshold),
+    reflectionLevel: clamp01(h.reflectionLevel, base.reflectionLevel),
+    updatedAt: typeof h.updatedAt === "number" ? h.updatedAt : base.updatedAt,
+  };
+}
+
+function validateFactInputV1Pure(f: any): { ok: boolean; reason?: string } {
+  if (!f || typeof f !== "object") return { ok: false, reason: "not_object" };
+
+  const key = typeof f.key === "string" ? f.key.trim() : "";
+  if (!key) return { ok: false, reason: "missing_key" };
+
+  const domain = typeof f.domain === "string" ? f.domain.trim() : "";
+  if (!domain) return { ok: false, reason: "missing_domain" };
+
+  const source = typeof f.source === "string" ? f.source.trim() : "";
+  if (!source) return { ok: false, reason: "missing_source" };
+
+  const sourceRef = typeof f.sourceRef === "string" ? f.sourceRef.trim() : "";
+  if (!sourceRef) return { ok: false, reason: "missing_sourceRef" };
+
+  if (typeof f.value === "undefined") return { ok: false, reason: "missing_value" };
+
+  const entityId = typeof f.entityId === "string" ? f.entityId.trim() : "";
+  if (entityId) return { ok: true };
+
+  const fp = typeof f.entityFingerprint === "string" ? f.entityFingerprint.trim() : "";
+  const ed = typeof f.entityDomain === "string" ? f.entityDomain.trim() : "";
+  if (fp && ed) return { ok: true };
+
+  return { ok: false, reason: "missing_entity_resolver" };
+}
+
+function stableEntityIdFromFingerprint(fpRaw: string): string {
+  // Pure replacement for Firestore-based entity resolution:
+  // we DO NOT create or look up entities; we just compute a stable id.
+  const norm = normalizeFingerprint(fpRaw);
+  const id = mapIdFromFingerprint(norm);
+  return `fp:${id}`;
+}
+
+function normalizeValidityWindow(v: any): ValidityWindow | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const from = typeof v.from === "number" ? v.from : undefined;
+  const to = typeof v.to === "number" ? v.to : undefined;
+  if (from === undefined && to === undefined) return undefined;
+  return { from, to };
+}
+
+function toValidatedFactPure(f: FactInput, localeFallback: string) {
+  const rawDomain = typeof (f as any).domain === "string" ? String((f as any).domain) : "generic";
+  const domain = rawDomain.trim() || "generic";
+
+  const meta = f.meta && typeof f.meta === "object" ? (f.meta as Record<string, any>) : undefined;
+
+  // match store.ts behavior: locale from meta.locale, else fallback
+  const locale =
+    meta && typeof meta.locale === "string" ? String(meta.locale) : localeFallback;
+
+  // key normalization (system keys pass through in normalizeFactKey)
+  const key = normalizeFactKey(String((f as any).key ?? ""), domain as any, meta);
+
+  // value normalization
+  const value = normalizeFactValueByLocale((f as any).value ?? null, locale);
+
+  // entityId: keep if provided; else stable from fingerprint (pure)
+  const entityIdRaw = typeof (f as any).entityId === "string" ? String((f as any).entityId).trim() : "";
+  const fpRaw = typeof (f as any).entityFingerprint === "string" ? String((f as any).entityFingerprint) : "";
+  const entityId = entityIdRaw || (fpRaw ? stableEntityIdFromFingerprint(fpRaw) : "");
+
+  const validity = normalizeValidityWindow((f as any).validity);
+
+  // match store.ts behavior: if meta.latest === true => stable id per (entityId+key)
+  const isLatest = !!(meta && (meta as any).latest === true);
+
+  const factId =
+    typeof (f as any).factId === "string" && String((f as any).factId).trim()
+      ? String((f as any).factId).trim()
+      : buildFactId({
+          entityId,
+          key,
+          value: isLatest ? "__latest__" : value,
+          options: { validityWindow: validity },
+        });
+
+  return {
+    factId,
+    entityId,
+    entityFingerprint: fpRaw ? fpRaw : undefined,
+    entityDomain:
+      typeof (f as any).entityDomain === "string" ? String((f as any).entityDomain) : undefined,
+    entityType:
+      typeof (f as any).entityType === "string" ? String((f as any).entityType) : undefined,
+
+    domain,
+    key,
+    value,
+
+    validity: validity ? { ...validity } : undefined,
+    meta,
+
+    source: typeof (f as any).source === "string" ? String((f as any).source) : undefined,
+    sourceRef: typeof (f as any).sourceRef === "string" ? String((f as any).sourceRef) : undefined,
+    conflict: (f as any).conflict === true ? true : undefined,
+  };
+}
+
+function applyHaltungPatchPure(before: CoreHaltungV1, patch: Partial<Omit<CoreHaltungV1, "version" | "updatedAt">>): CoreHaltungV1 {
+  // deriveHaltungPatchFromEvent() already clamps. We keep updatedAt unchanged for determinism.
+  return {
+    version: 1,
+    directness: patch.directness !== undefined ? clamp01(patch.directness, before.directness) : before.directness,
+    interventionDepth: patch.interventionDepth !== undefined ? clamp01(patch.interventionDepth, before.interventionDepth) : before.interventionDepth,
+    patience: patch.patience !== undefined ? clamp01(patch.patience, before.patience) : before.patience,
+    escalationThreshold: patch.escalationThreshold !== undefined ? clamp01(patch.escalationThreshold, before.escalationThreshold) : before.escalationThreshold,
+    reflectionLevel: patch.reflectionLevel !== undefined ? clamp01(patch.reflectionLevel, before.reflectionLevel) : before.reflectionLevel,
+    updatedAt: before.updatedAt,
+  };
+}
+
+// -----------------------
+// Main
+// -----------------------
+
+export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceOutput> {
+  // 0) Normalize input
+  const userId = String(input?.userId ?? "").trim();
+  if (!userId) throw new Error("runCoreOnce: userId missing");
+
+  const text = String(input?.text ?? "");
+  const locale = String(input?.state?.locale ?? "de-DE");
+
+  // Phase 6.1: [] means none, undefined means default(all)
+  const extractorIds = Array.isArray(input?.extractorIds)
+    ? input.extractorIds
+    : listExtractors();
+
+  const prevFacts = Array.isArray(input?.state?.facts) ? input.state!.facts! : [];
+  const prevFactIdSet = new Set(
+    prevFacts.map((f) => String(f.factId ?? "").trim()).filter(Boolean)
+  );
+
+  const hBefore = normalizeHaltungPure(input?.state?.haltung);
+
+  // 1) Build in-memory RawEvent (deterministic)
+  const timestamp = 0; // strict determinism in Phase 6.1
+  const ingestHash = sha256(`${userId}::${locale}::${text}`);
+  const rawEventId = sha256(`rawEvent::${ingestHash}`);
+
+  const rawEventDoc: RawEventDoc = {
+    timestamp,
+    sourceType: "ingest_document_text",
+    userRef: userId,
+    locale,
+    payload: { text },
+    meta: { filename: null, mimeType: null, source: null },
+    ingestHash,
+    dayBucket: dayBucketUTC(timestamp),
+  };
+
+  // 2) Run extractors (pure; no persistence; no entity resolution via Firestore)
+  const extractorInput = toExtractorInputV1(rawEventId, rawEventDoc);
+
+  const extractedFacts: FactInput[] = [];
+  const warnings: string[] = [];
+  const perExtractor: {
+  extractorId: string;
+  ok: boolean;
+  factsIn?: number;
+  factsAccepted?: number;
+  error?: string;
+}[] = [];
+
+  for (const extractorId of extractorIds) {
+    const ex = getExtractor(extractorId);
+    if (!ex) {
+      perExtractor.push({ extractorId, ok: false, error: "unknown_extractor" });
+      continue;
+    }
+
+    try {
+      const res = await ex.extract({
+        rawEventId: extractorInput.rawEventId,
+        locale: extractorInput.locale,
+        sourceType: extractorInput.sourceType,
+        payload: extractorInput.payload,
+        meta: extractorInput.meta,
+      });
+
+      const facts = Array.isArray((res as any)?.facts) ? ((res as any).facts as FactInput[]) : [];
+      const w = Array.isArray((res as any)?.warnings) ? ((res as any).warnings as string[]) : [];
+
+      // Phase 1 strict: reject invalid facts (same rule-shape as existing runner)
+      const cleaned = facts.filter((f: any) => validateFactInputV1Pure(f).ok);
+
+      extractedFacts.push(...cleaned);
+      warnings.push(...w);
+
+      perExtractor.push({
+        extractorId,
+        ok: true,
+        factsIn: facts.length,
+        factsAccepted: cleaned.length,
+      });
+    } catch (e) {
+      perExtractor.push({ extractorId, ok: false, error: String(e) });
+    }
+  }
+
+  // 3) Validate + normalize + compute factIds (pure)
+  const validatedFacts: RunCoreOnceOutput["validatedFacts"] = [];
+  for (const f of extractedFacts) {
+    const v = validateFactInputV1Pure(f);
+    if (!v.ok) continue;
+
+    const vf = toValidatedFactPure(f, locale);
+    // Hard guard: must have key + entityId + factId
+    if (!vf.key || !vf.entityId || !vf.factId) continue;
+
+    validatedFacts.push(vf);
+  }
+
+  // 4) factsDiff (pure)
+  const diffNew: string[] = [];
+  const diffIgnored: string[] = [];
+  for (const f of validatedFacts) {
+    if (prevFactIdSet.has(f.factId)) diffIgnored.push(f.factId);
+    else diffNew.push(f.factId);
+  }
+
+  // 5) Haltung (pure)
+  const triggers = computeHaltungTriggersFromMessage({ message: text });
+
+  const learningEvent = detectHaltungLearningEventFromMessage(text);
+  const patch =
+    learningEvent ? deriveHaltungPatchFromEvent(hBefore, learningEvent) : {};
+
+  const hAfter = applyHaltungPatchPure(hBefore, patch);
+
+  // 6) Intervention (pure)
+  const intervention = computeCoreInterventionV1({
+    message: text,
+    haltung: hAfter,
+    triggerRes: triggers,
+  });
+
+  return {
+    rawEvent: { rawEventId, doc: rawEventDoc },
+    validatedFacts,
+    factsDiff: { new: diffNew, ignored: diffIgnored },
+    haltungDelta: {
+      before: hBefore,
+      after: hAfter,
+      patch,
+      learningEvent: learningEvent ? { ...learningEvent } : null,
+      triggers,
+    },
+    intervention,
+
+    effects: { writesPlanned: false },
+
+    debug: {
+      extractorIds,
+      warningsCount: warnings.length,
+      extractedFactsCount: extractedFacts.length,
+      validatedFactsCount: validatedFacts.length,
+      perExtractor,
+    },
+  };
+}
