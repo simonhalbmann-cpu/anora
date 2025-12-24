@@ -97,18 +97,28 @@ assert(
 
     // Phase 6.3: writePlan must stay frozen (no persistence writes planned)
 assert(
-  out?.writePlan?.facts === "none",
-  `[${mode}] writePlan.facts expected "none" at step ${i}, got=${String(out?.writePlan?.facts)}`
+  out?.writePlan?.facts?.mode === "none",
+  `[${mode}] writePlan.facts.mode expected "none" at step ${i}, got=${String(out?.writePlan?.facts?.mode)}`
 );
 
 assert(
-  out?.writePlan?.haltung === "none",
-  `[${mode}] writePlan.haltung expected "none" at step ${i}, got=${String(out?.writePlan?.haltung)}`
+  (out?.writePlan?.facts?.count ?? -1) === 0,
+  `[${mode}] writePlan.facts.count expected 0 at step ${i}, got=${String(out?.writePlan?.facts?.count)}`
 );
 
 assert(
-  out?.writePlan?.rawEvent === "none",
-  `[${mode}] writePlan.rawEvent expected false at step ${i}, got=${String(out?.writePlan?.rawEvent)}`
+  out?.writePlan?.haltung?.mode === "none",
+  `[${mode}] writePlan.haltung.mode expected "none" at step ${i}, got=${String(out?.writePlan?.haltung?.mode)}`
+);
+
+assert(
+  Array.isArray(out?.writePlan?.haltung?.keys) && out.writePlan.haltung.keys.length === 0,
+  `[${mode}] writePlan.haltung.keys expected [] at step ${i}, got=${JSON.stringify(out?.writePlan?.haltung?.keys)}`
+);
+
+assert(
+  out?.writePlan?.rawEvent === "append",
+  `[${mode}] writePlan.rawEvent expected "append" at step ${i}, got=${String(out?.writePlan?.rawEvent)}`
 );
 
     // Phase 6.3.5: determinism HARD (same text => bit-identical output)
@@ -155,10 +165,10 @@ async function main() {
   const resB = await runMode("B_ON_FROZEN");
   console.log("✅ MODE B PASSED", resB);
 
-  console.log("✅ PHASE 6.1 PASSED (A+B)");
+  console.log("✅ STABILITY TEST PASSED (A+B)");
 }
 
 main().catch((e) => {
-  console.error("❌ PHASE 6.1 FAILED", e);
+  console.error("❌ STABILITY TEST FAILED", e);
   process.exit(1);
 });

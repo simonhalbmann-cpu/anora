@@ -7,7 +7,9 @@
     "shell": "npm run build && firebase functions:shell",
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "lint": "eslint \"src/**/*.{ts,tsx,js,jsx}\"",
+    "lint:pure": "eslint \"src/core/runCoreOnce.ts\" \"src/core/runCoreWithPersistence.ts\" \"src/core/bridgePure.ts\" \"src/scripts/**/*.{ts,tsx,js,jsx}\""
   },
   "engines": {
     "node": "22"

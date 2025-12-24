@@ -10,6 +10,7 @@
  * - No side effects
  */
 
+import { executeWritePlanV1 } from "./persistence/executeWritePlanV1";
 import type { CoreWritePlanV1, PersistenceStatusV1 } from "./persistence/types";
 import type { RunCoreOnceInput, RunCoreOnceOutput } from "./runCoreOnce";
 import { runCoreOnce } from "./runCoreOnce";
@@ -38,10 +39,20 @@ export async function runCoreWithPersistence(
   const hasHaltungPatch = hasAnyKeys(out.haltungDelta?.patch);
 
   const writePlan: CoreWritePlanV1 = {
-    rawEvent: "none",
-    facts: factsNewCount > 0 ? "upsert" : "none",
-    haltung: hasHaltungPatch ? "patch" : "none",
-  };
+  version: 1,
+
+  rawEvent: "append",
+
+  facts: {
+    mode: factsNewCount > 0 ? "upsert" : "none",
+    count: factsNewCount,
+  },
+
+  haltung: {
+    mode: hasHaltungPatch ? "patch" : "none",
+    keys: hasHaltungPatch ? Object.keys(out.haltungDelta.patch) : [],
+  },
+};
 
   // Phase 6.2: persistence is still frozen
   if (dryRun) {
@@ -54,12 +65,37 @@ export async function runCoreWithPersistence(
     return { ...out, persistence, writePlan };
   }
 
-  // Not implemented on purpose (Phase 6.3+)
+  const res = await executeWritePlanV1({
+  userId: String(input.userId),
+  out,
+  plan: writePlan,
+});
+
+if (res.reason === "noop") {
   const persistence: PersistenceStatusV1 = {
     dryRun: false,
     wrote: false,
-    reason: "not_implemented_yet",
+    reason: "noop",
   };
-
   return { ...out, persistence, writePlan };
+}
+
+if (res.reason === "executed") {
+  const persistence: PersistenceStatusV1 = {
+    dryRun: false,
+    wrote: true,
+    reason: "executed",
+    counts: res.counts,
+  };
+  return { ...out, persistence, writePlan };
+}
+
+// failed
+const persistence: PersistenceStatusV1 = {
+  dryRun: false,
+  wrote: false,
+  reason: "failed",
+  error: res.error,
+};
+return { ...out, persistence, writePlan };
 }
