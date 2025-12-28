@@ -1,11 +1,23 @@
 // functions/src/core/entities/types.ts
 // Roadmap 3.1: Core Entity Types (domain-agnostisch)
 
+import { FROZEN } from "../CORE_FREEZE";
+
 export type EntityDomain = "real_estate" | "generic";
 
 export function toEntityDomain(input: unknown): EntityDomain {
-  if (input === "real_estate") return "real_estate";
-  return "generic";
+  const raw = String(input ?? "").trim();
+
+  // harte Regel: nur Domains aus CORE_FREEZE erlauben
+  const allowed = FROZEN.domains as readonly string[];
+
+  if (!allowed.includes(raw)) {
+    throw new Error(
+      `CORE FREEZE VIOLATION: domain '${raw}' not allowed. Allowed: ${allowed.join(", ")}`
+    );
+  }
+
+  return raw as EntityDomain;
 }
 
 export type EntityType =

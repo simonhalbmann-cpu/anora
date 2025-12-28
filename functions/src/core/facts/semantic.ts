@@ -1,4 +1,5 @@
 import { logger } from "firebase-functions/v2";
+import { FROZEN } from "../CORE_FREEZE";
 import type { EntityDomain } from "../entities/types";
 import type { FactKey } from "./types";
 
@@ -25,6 +26,15 @@ function isSystemKey(raw: string, meta?: Record<string, any>): boolean {
   return false;
 }
 
+// 🔒 CORE FREEZE: keine neuen Fact-Keys
+function assertFactKeyFrozen(key: string): void {
+  if (!(FROZEN.factKeys as readonly string[]).includes(key)) {
+    throw new Error(
+      `CORE FREEZE VIOLATION: fact key '${key}' not allowed. Allowed keys: ${FROZEN.factKeys.join(", ")}`
+    );
+  }
+}
+
 export function normalizeFactKey(
   rawKey: string,
   domain?: EntityDomain,
@@ -40,36 +50,36 @@ export function normalizeFactKey(
     metaSystem: meta?.system === true,
   });
 
-  // 🔒 System-Facts niemals normalisieren (aber stabilisieren: trim + lowercase)
+  let finalKey: string;
+
+  // 🔒 System-Facts niemals normalisieren (aber stabilisieren: lowercase)
   if (isSystemKey(raw, meta)) {
-    const sys = raw.toLowerCase();
+    finalKey = raw.toLowerCase();
+
     logger.info("normalizeFactKey_system_passthrough", {
       raw,
-      normalized: sys,
+      normalized: finalKey,
       domain: domain ?? null,
     });
-    return sys;
+  } else {
+    const k = raw
+      .toLowerCase()
+      .replace(/[:\/\.\-\s]+/g, "_") // Trenner -> _
+      .replace(/[^a-z0-9_]/g, "")   // Rest raus
+      .replace(/_+/g, "_")          // __ -> _
+      .replace(/^_+|_+$/g, "");     // leading/trailing _ weg
+
+    logger.info("normalizeFactKey_result", {
+      raw,
+      normalized: k,
+      domain: domain ?? null,
+    });
+
+    if (!k) return "";
+
+    finalKey = domain === "real_estate" ? (REAL_ESTATE_KEY_MAP[k] ?? k) : k;
   }
 
-  // Normale Keys: hart normalisieren
-  const k = raw
-    .toLowerCase()
-    .replace(/[:\/\.\-\s]+/g, "_") // Trenner -> _
-    .replace(/[^a-z0-9_]/g, "")   // Rest raus
-    .replace(/_+/g, "_")          // __ -> _
-    .replace(/^_+|_+$/g, "");     // leading/trailing _ weg
-
-  logger.info("normalizeFactKey_result", {
-    raw,
-    normalized: k,
-    domain: domain ?? null,
-  });
-
-  if (!k) return "";
-
-  if (domain === "real_estate") {
-    return REAL_ESTATE_KEY_MAP[k] ?? k;
-  }
-
-  return k;
+  assertFactKeyFrozen(finalKey);
+  return finalKey as FactKey;
 }

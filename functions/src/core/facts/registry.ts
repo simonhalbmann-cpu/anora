@@ -1,3 +1,4 @@
+import { FROZEN } from "../CORE_FREEZE";
 import type { Extractor } from "./types";
 
 const EXTRACTORS = new Map<string, Extractor>();
@@ -11,6 +12,14 @@ export function registerExtractor(extractor: Extractor): void {
   }
   if (typeof extractor.extract !== "function") {
     throw new Error("registerExtractor: extractor.extract missing");
+  }
+
+  // 🔒 CORE FREEZE: keine neuen Extractors zulassen
+  const allowed = FROZEN.extractors as readonly string[];
+  if (!allowed.includes(extractor.id)) {
+    throw new Error(
+      `CORE FREEZE VIOLATION: extractor '${extractor.id}' not allowed. Allowed: ${allowed.join(", ")}`
+    );
   }
 
   EXTRACTORS.set(extractor.id, extractor);
