@@ -42,9 +42,15 @@ export type FactDoc = {
   sourceRef?: string;      // z.B. rawEventId
   confidence?: number;     // 0..1 (optional, nicht erzwingen)
 
-  // Konflikte / Supersedes (3.4)
-  conflict?: boolean;
-  supersedesFactId?: string;
+  // Konflikte / Supersedes (Phase 1.1.2 minimal)
+conflict?: boolean;
+
+// default: false (aktive Facts)
+isSuperseded?: boolean;
+
+// nur gesetzt, wenn isSuperseded=true
+supersededAt?: number;         // unix millis
+supersededByFactId?: string;   // neue (aktuelle) factId
 
   validity?: ValidityWindow;
 

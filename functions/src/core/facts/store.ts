@@ -6,10 +6,43 @@ import * as admin from "firebase-admin";
 import { logger } from "firebase-functions/v2";
 import { getOrCreateEntityIdByFingerprint } from "../entities/store";
 import { toEntityDomain } from "../entities/types";
+import { stableStringify } from "../utils/stableStringify";
 import { buildFactId } from "./factId";
 import { normalizeFactValueByLocale } from "./locale";
 import { normalizeFactKey } from "./semantic";
 import type { FactDoc, FactInput } from "./types";
+
+function canonicalizeFactForNoop(doc: any) {
+  if (!doc || typeof doc !== "object") return doc;
+
+  // shallow clone
+  const clone: any = { ...doc };
+
+  // 1) Zeitstempel raus (klar)
+  delete clone.createdAt;
+  delete clone.updatedAt;
+
+  // 2) Event-volatile Provenance raus:
+  // sourceRef ist pro Ingest/Event unterschiedlich (z.B. rawEventId) -> darf NOOP nicht brechen
+  delete clone.sourceRef;
+
+  // 3) Meta bereinigen: alles raus, was event-gebunden ist
+  if (clone.meta && typeof clone.meta === "object") {
+    const m: any = { ...clone.meta };
+
+    // typische volatile Felder (bei dir realistisch)
+    delete m.rawEventId;
+    delete m.sourceRef;
+    delete m.duplicateOf;
+    delete m.ingestedAt;
+    delete m.runId;
+    delete m.requestId;
+
+    clone.meta = m;
+  }
+
+  return clone;
+}
 
 function getDb() {
   // Wichtig: initializeApp muss VORHER in index.ts passieren.
@@ -42,33 +75,6 @@ type EvidenceDoc = {
   createdAt: number;
 };
 
-function stableStringify(value: any): string {
-  const seen = new WeakSet();
-
-  const stringify = (v: any): any => {
-    if (v === null) return null;
-    if (v === undefined) return "__undefined__"; // nur für Vergleich, NICHT speichern
-    if (typeof v !== "object") return v;
-
-    if (seen.has(v)) return "__circular__";
-    seen.add(v);
-
-    if (Array.isArray(v)) return v.map(stringify);
-
-    const out: Record<string, any> = {};
-    for (const k of Object.keys(v).sort()) {
-      out[k] = stringify(v[k]);
-    }
-    return out;
-  };
-
-  return JSON.stringify(stringify(value));
-}
-
-function valuesEqual(a: any, b: any): boolean {
-  return stableStringify(a) === stableStringify(b);
-}
-
 // Minimal: wir schreiben Facts nach facts_v1/{factId}
 export async function upsertManyFacts(
   userId: string,
@@ -89,6 +95,9 @@ let evidenceAttempted = 0;
 
   for (let i = 0; i < facts.length; i += BATCH_SIZE) {
     const slice = facts.slice(i, i + BATCH_SIZE);
+
+    // 1) Wir bauen erst alle FactDocs + refs, um existing einmalig zu laden
+    const pending: Array<{ ref: FirebaseFirestore.DocumentReference; doc: FactDoc }> = [];
     const batch = getDb().batch();
 
     for (const f of slice) {
@@ -97,150 +106,214 @@ let evidenceAttempted = 0;
         continue;
       }
       if (!f.key) {
-  skipped++;
-  continue;
-}
+        skipped++;
+        continue;
+      }
 
-// 3.5.1: entityId automatisch resolven, falls nicht vorhanden
-let entityId =
-  typeof (f as any).entityId === "string" && (f as any).entityId.trim()
-    ? (f as any).entityId.trim()
-    : "";
+      // 3.5.1: entityId automatisch resolven, falls nicht vorhanden
+      let entityId =
+        typeof (f as any).entityId === "string" && (f as any).entityId.trim()
+          ? (f as any).entityId.trim()
+          : "";
 
-if (!entityId) {
-  const fingerprint =
-    typeof (f as any).entityFingerprint === "string"
-      ? (f as any).entityFingerprint.trim()
-      : "";
+      if (!entityId) {
+        const fingerprint =
+          typeof (f as any).entityFingerprint === "string"
+            ? (f as any).entityFingerprint.trim()
+            : "";
 
-  const entityDomain = (f as any).entityDomain;
+        const entityDomain = (f as any).entityDomain;
 
-  // Wenn weder entityId noch genug Infos zum Resolven da sind -> skip
-  if (!fingerprint || !entityDomain) {
-    skipped++;
-    continue;
-  }
+        // Wenn weder entityId noch genug Infos zum Resolven da sind -> skip
+        if (!fingerprint || !entityDomain) {
+          skipped++;
+          continue;
+        }
 
-  const r = await getOrCreateEntityIdByFingerprint({
-    userId,
-    domain: entityDomain,
-    type: (f as any).entityType ?? "generic",
-    fingerprint,
-    // label/meta optional später – fürs MVP nicht nötig
-  });
+        const r = await getOrCreateEntityIdByFingerprint({
+          userId,
+          domain: entityDomain,
+          type: (f as any).entityType ?? "generic",
+          fingerprint,
+        });
 
-  entityId = r.entityId;
-}
+        entityId = r.entityId;
+      }
 
-      const rawDomain =
-  (f as any).domain ?? (f as any).entityDomain ?? "generic";
-const domain = toEntityDomain(rawDomain);
-            const validityWindow = f.validity ?? undefined;
+      const rawDomain = (f as any).domain ?? (f as any).entityDomain ?? "generic";
+      const domain = toEntityDomain(rawDomain);
+      const validityWindow = f.validity ?? undefined;
 
-            // 3.7: Key normalisieren (Registry) – VOR FactId/Conflict
-const key = normalizeFactKey(f.key, domain, f.meta);
-if (!key) {
-  skipped++;
-  continue;
-}
+      // 3.7: Key normalisieren (Registry) – VOR FactId/Conflict
+      const key = normalizeFactKey(f.key, domain, f.meta);
+      if (!key) {
+        skipped++;
+        continue;
+      }
 
-// 3.6 Locale Layer (Default de-DE, wenn nicht gesetzt)
-const locale =
-  (f.meta && typeof f.meta === "object" && typeof (f.meta as any).locale === "string"
-    ? String((f.meta as any).locale)
-    : "de-DE");
+      // 3.6 Locale Layer (Default de-DE, wenn nicht gesetzt)
+      const locale =
+        f.meta && typeof f.meta === "object" && typeof (f.meta as any).locale === "string"
+          ? String((f.meta as any).locale)
+          : "de-DE";
 
-// Value vor FactId + Conflict normalisieren
-const normalizedValue = normalizeFactValueByLocale(f.value ?? null, locale);
+      const normalizedValue = normalizeFactValueByLocale(f.value ?? null, locale);
 
-// 1) FactId deterministisch aus (entityId + key + normalizedValue + validity)
-// FIX 3.9: Wenn meta.latest=true -> stabile ID pro (entityId+key), damit es überschreibt
-const isLatest =
-  !!(f.meta && typeof f.meta === "object" && (f.meta as any).latest === true);
+      // FIX 3.9: latest
+      const isLatest =
+        !!(f.meta && typeof f.meta === "object" && (f.meta as any).latest === true);
 
-const factId =
-  typeof f.factId === "string" && f.factId.trim()
-    ? f.factId.trim()
-    : buildFactId({
-        entityId: entityId,
-        key,
-        // Wenn latest: Value NICHT in die ID einfließen lassen
-        value: isLatest ? "__latest__" : normalizedValue,
-        options: { validityWindow },
-      });
+      const sourceRef =
+        typeof f.sourceRef === "string" && f.sourceRef.trim()
+          ? f.sourceRef.trim()
+          : "";
+
+      // 🔒 PHASE 1.1.1 latest-only contract (hart)
+      if (isLatest) {
+        if (!sourceRef) {
+          skipped++;
+          continue;
+        }
+        const metaObj = f.meta && typeof f.meta === "object" ? (f.meta as any) : null;
+        if (!metaObj || metaObj.latest !== true) {
+          skipped++;
+          continue;
+        }
+      }
+
+      const factId =
+        typeof f.factId === "string" && f.factId.trim()
+          ? f.factId.trim()
+          : buildFactId({
+              entityId: entityId,
+              key,
+              value: isLatest ? "__latest__" : normalizedValue,
+              options: { validityWindow },
+            });
 
       // ------------------------------------------------------------
-// Evidence v1: pro (factId + sourceRef) ein Beleg
-// Wird auch geschrieben, wenn Fact später NO-OP ist.
-// ------------------------------------------------------------
-const sourceRef =
-  typeof f.sourceRef === "string" && f.sourceRef.trim()
-    ? f.sourceRef.trim()
-    : "";
+      // Evidence v1 (immer, auch wenn Fact später NOOP ist)
+      // ------------------------------------------------------------
+      if (sourceRef) {
+        const evidenceId = sha256Hex(`evidence|${factId}|${sourceRef}`);
 
-// Evidence nur, wenn wir eine Quelle haben (bei dir: rawEventId)
-if (sourceRef) {
-  // evidenceId stabil: gleicher Fact + gleicher RawEvent => gleiche EvidenceId
-  // (du brauchst dafür sha256Hex + evidenceCol + EvidenceDoc – wie vorher beschrieben)
-  const evidenceId = sha256Hex(`evidence|${factId}|${sourceRef}`);
+        const ev: EvidenceDoc = {
+          evidenceId,
+          factId,
+          userId,
+          entityId,
+          domain,
+          key,
+          value: normalizedValue,
+          source: f.source ?? "other",
+          sourceRef,
+          createdAt: now,
+        };
 
-  const ev: EvidenceDoc = {
-    evidenceId,
-    factId,
-    userId,
-    entityId,
-    domain,
-    key,
-    value: normalizedValue,
-    source: f.source ?? "other",
-    sourceRef,
-    createdAt: now,
-  };
+        const evRef = evidenceCol(userId).doc(evidenceId);
+        batch.set(evRef, ev, { merge: true });
+        evidenceAttempted++;
+      }
 
-  const evRef = evidenceCol(userId).doc(evidenceId);
-  batch.set(evRef, ev, { merge: true });
-  evidenceAttempted++;
-}
+      const conflict = f.conflict === true ? true : false;
 
-// Phase 2: KEIN Index im Write-Pfad.
-// conflict wird nicht mehr "erraten", nur noch übernommen, falls explizit gesetzt.
-const conflict = f.conflict === true ? true : false;
+      // Fact-Doc bauen (updatedAt setzen wir erst beim echten Write)
+      const doc: FactDoc = {
+        factId,
+        entityId: entityId,
+        domain,
+        key,
+        value: normalizedValue,
+        isSuperseded: false,
 
-// 3) Doc bauen (ohne undefined in Firestore zu schreiben)
-const doc: FactDoc = {
-  factId,
-  entityId: entityId,
-  domain,
-  key,
-  value: normalizedValue,
+        source: f.source ?? "other",
+        conflict,
 
-  source: f.source ?? "other",
-  conflict,
+        // createdAt/updatedAt werden später NOOP-sicher gesetzt
+        createdAt: typeof f.createdAt === "number" ? f.createdAt : now,
+        updatedAt: now,
 
-  createdAt: typeof f.createdAt === "number" ? f.createdAt : now,
-  updatedAt: now,
-
-  // Optional fields (nur schreiben, wenn vorhanden)
-  ...(typeof f.unit === "string" && f.unit.trim()
-    ? { unit: f.unit.trim() }
-    : {}),
-
-  ...(typeof f.sourceRef === "string" && f.sourceRef.trim()
-    ? { sourceRef: f.sourceRef.trim() }
-    : {}),
-
-  ...(typeof f.confidence === "number"
-    ? { confidence: f.confidence }
-    : {}),
-
-  ...(f.validity !== undefined ? { validity: f.validity } : {}),
-
-  ...(f.meta && typeof f.meta === "object" ? { meta: f.meta } : {}),
-};
+        ...(typeof f.unit === "string" && f.unit.trim() ? { unit: f.unit.trim() } : {}),
+        ...(typeof f.confidence === "number" ? { confidence: f.confidence } : {}),
+        ...(f.validity !== undefined ? { validity: f.validity } : {}),
+        ...(f.meta && typeof f.meta === "object" ? { meta: f.meta } : {}),
+      };
 
       const ref = col.doc(factId);
-      batch.set(ref, doc, { merge: true });
-      upserted++;
+      pending.push({ ref, doc });
+    }
+
+    // 2) Existing docs einmalig laden
+    const existingById = new Map<string, any>();
+    if (pending.length > 0) {
+      const refs = pending.map((p) => p.ref);
+      const snaps = await getDb().getAll(...refs);
+      for (const s of snaps) {
+        existingById.set(s.id, s.exists ? s.data() : null);
+      }
+    }
+
+    // 3) NOOP-Check + Schreiben nur wenn geändert
+    const writeNow = Date.now();
+    for (const p of pending) {
+      const prev = existingById.get(p.ref.id) ?? null;
+
+      const nextDoc: FactDoc = {
+        ...p.doc,
+        // createdAt stabil halten, wenn Doc existiert
+        createdAt: typeof prev?.createdAt === "number" ? prev.createdAt : p.doc.createdAt,
+        // updatedAt nur relevant, wenn wir schreiben (ansonsten bleibt prev.updatedAt)
+        updatedAt: writeNow,
+      };
+
+      const prevCanon = canonicalizeFactForNoop(prev);
+      const nextCanon = canonicalizeFactForNoop(nextDoc);
+
+      const same =
+        !!prev && stableStringify(prevCanon) === stableStringify(nextCanon);
+
+      if (same) {
+        // NOOP: Fact nicht schreiben -> updatedAt bleibt stabil
+        continue;
+      }
+
+      // Phase 1.1.2 minimal Supersede:
+// Nur für NICHT-latest Facts (value-based IDs).
+const isLatest =
+  !!(nextDoc.meta && typeof nextDoc.meta === "object" && (nextDoc.meta as any).latest === true);
+
+if (!isLatest) {
+  const candSnap = await col
+    .where("entityId", "==", nextDoc.entityId)
+    .where("domain", "==", nextDoc.domain)
+    .where("key", "==", nextDoc.key)
+    .limit(50)
+    .get();
+
+  for (const d of candSnap.docs) {
+    if (d.id === nextDoc.factId) continue;
+
+    const data: any = d.data() || {};
+    const already = data.isSuperseded === true;
+
+    // ältere Docs ohne isSuperseded gelten als aktiv
+    if (!already) {
+      batch.set(
+        d.ref,
+        {
+          isSuperseded: true,
+          supersededAt: writeNow,
+          supersededByFactId: nextDoc.factId,
+          updatedAt: writeNow,
+        },
+        { merge: true }
+      );
+    }
+  }
+}
+
+batch.set(p.ref, nextDoc, { merge: true });
+upserted++;
     }
 
     await batch.commit();
