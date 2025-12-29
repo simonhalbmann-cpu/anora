@@ -35,20 +35,13 @@ export function detectHaltungLearningEventFromMessage(message: string): HaltungL
     return { type: "explicit_rejection", strength: 0.2 };
   }
 
-  // 2) Bestätigter Nutzen
+  // 2) Bestätigter Nutzen (NUR wenn es wirklich Feedback ist, nicht Höflichkeit)
   if (
     includesAny(msg, [
       "hat geholfen",
       "hilfreich",
-      "gut so",
-      "genau",
-      "passt",
-      "super",
-      "danke",
-      "verstanden",
-      "ok, machen wir so",
-      "ja machen wir so",
-      "ja, machen wir so",
+      "das war hilfreich",
+      "das hat geholfen",
     ])
   ) {
     return { type: "confirmed_helpful", strength: 0.15 };

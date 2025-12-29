@@ -50,17 +50,17 @@ async function main() {
   const rawEventId = out.rawEvent.rawEventId;
 
   const snap = await db
-    .collection("core")
-    .doc(userId)
-    .collection("rawEvents")
-    .doc(rawEventId)
-    .get();
+  .collection("brain")
+  .doc(userId)
+  .collection("rawEvents")
+  .doc(rawEventId)
+  .get();
 
   // This must be false because this rawEventId has never been written
   assert.equal(snap.exists, false, "dryRun=true must not create rawEvent doc for unique input");
 }
 
-  // --- Case 1: contradiction ---
+// --- Case 1: contradiction ---
   const texts = [
     baseText + " Kaltmiete 1200 Euro.",
     baseText + " Kaltmiete 900 Euro.",
@@ -71,18 +71,37 @@ async function main() {
     const out = await runCoreWithPersistence({
       userId,
       text: texts[i],
+      extractorIds: [], // Satelliten AUS -> keine Facts geplant
       dryRun: false,
     });
 
-    assert.equal(out.persistence.reason, "executed");
-    assert.equal(out.persistence.counts.rawEventsAppended, 1);
-    assert.equal(out.persistence.counts.factsUpserted, out.writePlan.facts.count);
+    if (out.persistence.reason !== "executed") {
+      console.error("❌ CONTRADICTION FAIL DEBUG", {
+        step: i,
+        reason: out.persistence.reason,
+        persistence: out.persistence,
+        writePlan: out.writePlan,
+        rawEvent: out.rawEvent,
+        error: (out as any).error ?? null,
+      });
+      throw new Error(
+        `contradiction failed at step=${i}, reason=${out.persistence.reason}`
+      );
+    }
+
     assertExecuted(out.persistence);
 
-// In contradiction texts we do NOT expect Haltung learning
-assert.equal(out.writePlan.haltung.mode, "none");
-assert.equal(out.persistence.counts.haltungPatched, 0);
-    
+    // rawEvent muss geschrieben werden
+    assert.equal(out.persistence.counts.rawEventsAppended, 1);
+
+    // Satelliten AUS: keine Facts geplant/geschrieben
+    assert.equal(out.writePlan.facts.mode, "none");
+    assert.equal(out.persistence.counts.factsUpserted, 0);
+
+    // Kein explizites Feedback -> kein Haltung-Learning
+    // (wenn du Flood/Abuse später als "patch" erlauben willst, ändern wir das gezielt)
+    assert.equal(out.writePlan.haltung.mode, "none");
+    assert.equal(out.persistence.counts.haltungPatched, 0);
 
     console.log("✅ CONTRADICTION OK", {
       step: i,
@@ -101,14 +120,18 @@ assert.equal(out.persistence.counts.haltungPatched, 0);
     });
 
     assertExecuted(out.persistence);
-assert.equal(out.writePlan.haltung.mode, "patch");
-assert.ok(out.writePlan.haltung.keys.length > 0);
-assert.equal(out.persistence.counts.haltungPatched, 1);
+
+    // Satelliten AUS: keine Facts geplant/geschrieben
+    assert.equal(out.writePlan.facts.mode, "none");
+    assert.equal(out.persistence.counts.factsUpserted, 0);
+
+    // Kein explizites Feedback -> kein Haltung-Learning
+    assert.equal(out.writePlan.haltung.mode, "none");
+    assert.equal(out.persistence.counts.haltungPatched, 0);
   }
 
   console.log("✅ ABUSE TEST 6.2 PASSED");
 }
-
 main().catch((e) => {
   console.error("❌ ABUSE TEST 6.2 FAILED", e);
   process.exit(1);
