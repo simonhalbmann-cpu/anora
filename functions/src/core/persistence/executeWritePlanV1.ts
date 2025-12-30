@@ -1,7 +1,6 @@
 // functions/src/core/persistence/executeWritePlanV1.ts
 // PHASE 6.3 – impure executor (the ONLY place that writes)
 
-import { createRequire } from "module";
 import type { RunCoreOnceOutput } from "../runCoreOnce";
 import type { CoreWritePlanV1, PersistenceResultV1 } from "./types";
 
@@ -45,8 +44,8 @@ export async function executeWritePlanV1(
   }
 
   try {
-  // Lazy import to keep core boundary obvious (still impure file)
-  const require = createRequire(import.meta.url);
+
+// CJS-safe lazy load (ts-node + tsc output)
 const { rawEventRef, factRef, haltungRef } = require("./firestoreExecutorV1");
 
   // We write exactly what the plan allows. Nothing else.
