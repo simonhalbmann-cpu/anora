@@ -35,7 +35,11 @@ export async function runCoreWithPersistence(
 
   const out = await runCoreOnce(input);
 
-  const factsNewCount = out.factsDiff?.new?.length ?? 0;
+  const satellitesOff =
+  Array.isArray(input.extractorIds) && input.extractorIds.length === 0;
+
+// HARD CONTRACT: satellites OFF => NEVER plan fact writes
+const factsPlannedCount = satellitesOff ? 0 : (out.validatedFacts?.length ?? 0);
   const hasHaltungPatch = hasAnyKeys(out.haltungDelta?.patch);
 
   const writePlan: CoreWritePlanV1 = {
@@ -44,9 +48,9 @@ export async function runCoreWithPersistence(
   rawEvent: "append",
 
   facts: {
-    mode: factsNewCount > 0 ? "upsert" : "none",
-    count: factsNewCount,
-  },
+  mode: factsPlannedCount > 0 ? "upsert" : "none",
+  count: factsPlannedCount,
+},
 
   haltung: {
     mode: hasHaltungPatch ? "patch" : "none",

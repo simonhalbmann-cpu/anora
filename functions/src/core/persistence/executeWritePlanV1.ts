@@ -1,12 +1,28 @@
 // functions/src/core/persistence/executeWritePlanV1.ts
 // PHASE 6.3 – impure executor (the ONLY place that writes)
 
+import admin from "firebase-admin";
 import type { RunCoreOnceOutput } from "../runCoreOnce";
+import { stableStringify } from "../utils/stableStringify";
 import type { CoreWritePlanV1, PersistenceResultV1 } from "./types";
 
 export let __EXECUTOR_CALLS__ = 0;
 export function __resetExecutorCalls__() {
   __EXECUTOR_CALLS__ = 0;
+}
+function canonicalizeFactDocForNoop(doc: any): any {
+  if (!doc || typeof doc !== "object") return doc;
+
+  const {
+    // volatile fields: raus für NOOP-Vergleich
+    updatedAt,
+    createdAt,
+
+    // Rest bleibt
+    ...rest
+  } = doc;
+
+  return rest;
 }
 
 // NOTE: This file is intentionally impure. It may import Firestore/admin later.
@@ -49,7 +65,8 @@ export async function executeWritePlanV1(
 const { rawEventRef, factRef, haltungRef } = require("./firestoreExecutorV1");
 
   // We write exactly what the plan allows. Nothing else.
-  const batch = (await import("firebase-admin")).default.firestore().batch();
+  const db = admin.firestore();
+const batch = db.batch();
 
   let rawEventsAppended = 0;
   let factsUpserted = 0;
@@ -62,32 +79,62 @@ const { rawEventRef, factRef, haltungRef } = require("./firestoreExecutorV1");
   }
 
   if (wantsFacts) {
-    // Upsert validated facts by deterministic factId
-    for (const f of input.out.validatedFacts) {
-      // Hard guard: only upsert facts that are actually NEW according to factsDiff
-      if (!input.out.factsDiff.new.includes(f.factId)) continue;
+  // Upsert NUR für Facts, die laut factsDiff "new" sind
+  const upserts = Array.isArray(input.out.validatedFacts)
+  ? input.out.validatedFacts
+  : [];
 
-      batch.set(
-        factRef(userId, f.factId),
-        {
-          factId: f.factId,
-          entityId: f.entityId,
-          domain: f.domain,
-          key: f.key,
-          value: f.value,
-          validity: f.validity ?? null,
-          meta: f.meta ?? null,
-          source: f.source ?? "raw_event",
-          sourceRef: f.sourceRef ?? input.out.rawEvent.rawEventId,
-          conflict: f.conflict ?? false,
-          updatedAt: Date.now(),
-          createdAt: Date.now(),
-        },
-        { merge: true }
-      );
-      factsUpserted += 1;
-    }
+  // Preload existing docs once (NOOP / idempotency)
+  const refs = upserts.map((f) => factRef(userId, String(f.factId)));
+  const snaps = refs.length > 0 ? await db.getAll(...refs) : [];
+
+  const existingById = new Map<string, any>();
+  for (const s of snaps) {
+    existingById.set(s.id, s.exists ? s.data() : null);
   }
+
+  for (const f of upserts) {
+    const factId = String(f.factId);
+    const ref = factRef(userId, factId);
+
+    const prev = existingById.get(factId) ?? null;
+    const now = Date.now();
+
+    // Base doc ohne volatile Felder
+    const nextBase: any = {
+      factId,
+      entityId: f.entityId,
+      domain: f.domain,
+      key: f.key,
+      value: f.value,
+      validity: f.validity ?? null,
+      meta: f.meta ?? null,
+      source: f.source ?? "raw_event",
+      sourceRef: f.sourceRef ?? input.out.rawEvent.rawEventId,
+      conflict: !!f.conflict,
+
+      // createdAt stabil halten wenn vorhanden
+      createdAt: typeof prev?.createdAt === "number" ? prev.createdAt : now,
+    };
+
+    const prevCanon = canonicalizeFactDocForNoop(prev);
+    const nextCanon = canonicalizeFactDocForNoop(nextBase);
+
+    const same =
+      !!prev && stableStringify(prevCanon) === stableStringify(nextCanon);
+
+    if (same) {
+      // ✅ NOOP: NICHT schreiben, updatedAt bleibt stabil
+      continue;
+    }
+
+    // Nur wenn wir wirklich schreiben: updatedAt setzen
+    const nextDoc = { ...nextBase, updatedAt: now };
+
+    batch.set(ref, nextDoc, { merge: true });
+    factsUpserted += 1;
+  }
+}
 
   if (wantsHaltung) {
     batch.set(
