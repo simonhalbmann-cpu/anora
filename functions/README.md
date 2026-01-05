@@ -38,3 +38,32 @@ Wichtig: Emulator-Start ist nur zuverlässig mit explizitem --config.
 
 ```bash
 firebase emulators:start --project anoraapp-ai --config "C:\users\simon\documents\anora-work\anora-app\firebase.json"
+
+
+## Phase 1.1.2 – Supersede-Datenmodell (minimal)
+
+### Ziel
+Ermöglicht Versionsablösung für **non-latest Facts**, ohne den latest-only Contract zu brechen.
+
+### Contract
+- **latest-only Facts** (`meta.latest === true`)
+  - stabile `factId`
+  - kein Supersede
+  - History ausschließlich über `evidence_v1`
+
+- **non-latest Facts** (`meta.latest !== true`)
+  - neue Werte erzeugen neue `factId`
+  - ältere Facts mit gleicher `(entityId, domain, key)` werden superseded
+
+### Supersede-Felder (`facts_v1`)
+- `isSuperseded: boolean`  
+- `supersededAt?: number` (unix millis)
+- `supersededByFactId?: string`
+
+### Invarianten
+- Es gibt **maximal einen aktiven Fact** (`isSuperseded !== true`) pro `(entityId, domain, key)` bei non-latest
+- Supersede passiert **nur bei echtem Write**, niemals bei NOOP
+- latest-only bleibt unverändert (Phase 1.1 Contract)
+
+### Status
+✅ Implementiert und verifiziert (Smoke-Test + Phase 1.1 Suite grün)

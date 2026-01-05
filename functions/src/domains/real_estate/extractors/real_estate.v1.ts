@@ -115,10 +115,11 @@ logger.info("re_v1_fingerprint_debug", {
         sourceRef: rawEventId,
 
         meta: {
-          locale,
-          extractorId: "real_estate.v1",
-          rawEventId,
-        },
+        locale,
+        extractorId: "real_estate.v1",
+        rawEventId,
+        latest: true,
+},
       });
     }
 
@@ -142,6 +143,7 @@ logger.info("re_v1_fingerprint_debug", {
           locale,
           extractorId: "real_estate.v1",
           rawEventId,
+          latest: true,
         },
       });
     }
