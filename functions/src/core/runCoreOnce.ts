@@ -30,6 +30,7 @@ import { getExtractor, listExtractors } from "./facts/registry";
 import { toExtractorInputV1 } from "./runner/extractorInput";
 
 import { mapIdFromFingerprint, normalizeFingerprint } from "./entities/fingerprint";
+import { stableStringify } from "./utils/stableStringify";
 
 // -----------------------
 // Types
@@ -84,9 +85,18 @@ export type RunCoreOnceOutput = {
   }[];
 
   factsDiff: {
-    new: string[];
-    ignored: string[];
-  };
+  new: string[];
+  updated: string[];  // ✅ NEU: existiert, aber Inhalt anders
+  ignored: string[];
+};
+
+// Optional, aber extrem hilfreich fürs Debugging & spätere History:
+factsChanges?: {
+  factId: string;
+  kind: "new" | "updated" | "ignored";
+  key: string;
+  entityId: string;
+}[];
 
   haltungDelta: {
     before: CoreHaltungV1;
@@ -183,6 +193,28 @@ function normalizeValidityWindow(v: any): ValidityWindow | undefined {
   const to = typeof v.to === "number" ? v.to : undefined;
   if (from === undefined && to === undefined) return undefined;
   return { from, to };
+}
+
+function canonicalizeFactForCompare(f: any) {
+  if (!f || typeof f !== "object") return f;
+
+  const {
+    // volatile Felder ignorieren
+    createdAt,
+    updatedAt,
+
+    // Rest vergleichen wir
+    ...rest
+  } = f;
+
+  return rest;
+}
+
+function stableEqual(a: any, b: any): boolean {
+  // du hast stableStringify schon im Projekt (wird in anderen Stellen genutzt)
+  // falls runCoreOnce.ts es noch nicht importiert, import ergänzen:
+  // import { stableStringify } from "./utils/stableStringify";
+  return stableStringify(a) === stableStringify(b);
 }
 
 function toValidatedFactPure(f: FactInput, localeFallback: string) {
@@ -358,13 +390,59 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
     validatedFacts.push(vf);
   }
 
-  // 4) factsDiff (pure)
-  const diffNew: string[] = [];
-  const diffIgnored: string[] = [];
-  for (const f of validatedFacts) {
-    if (prevFactIdSet.has(f.factId)) diffIgnored.push(f.factId);
-    else diffNew.push(f.factId);
+  // 4) factsDiff (pure) — NEW vs UPDATED vs IGNORED
+const diffNew: string[] = [];
+const diffUpdated: string[] = [];
+const diffIgnored: string[] = [];
+
+const changes: {
+  factId: string;
+  kind: "new" | "updated" | "ignored";
+  key: string;
+  entityId: string;
+}[] = [];
+
+// Map: prev facts by factId (schnell)
+const prevById = new Map<string, any>();
+for (const pf of prevFacts) {
+  const id = String((pf as any)?.factId ?? "").trim();
+  if (id) prevById.set(id, pf);
+}
+
+for (const f of validatedFacts) {
+  const prev = prevById.get(f.factId);
+
+  if (!prev) {
+    diffNew.push(f.factId);
+    changes.push({ factId: f.factId, kind: "new", key: f.key, entityId: f.entityId });
+    continue;
   }
+
+  // Vergleich: prev vs next (ohne volatile timestamps)
+  const prevCanon = canonicalizeFactForCompare(prev);
+  const nextCanon = canonicalizeFactForCompare({
+    factId: f.factId,
+    entityId: f.entityId,
+    domain: f.domain,
+    key: f.key,
+    value: f.value,
+    validity: f.validity ?? null,
+    meta: f.meta ?? null,
+    source: f.source ?? null,
+    sourceRef: f.sourceRef ?? null,
+    conflict: f.conflict ?? false,
+  });
+
+  const same = stableEqual(prevCanon, nextCanon);
+
+  if (same) {
+    diffIgnored.push(f.factId);
+    changes.push({ factId: f.factId, kind: "ignored", key: f.key, entityId: f.entityId });
+  } else {
+    diffUpdated.push(f.factId);
+    changes.push({ factId: f.factId, kind: "updated", key: f.key, entityId: f.entityId });
+  }
+}
 
   // 5) Haltung (pure)
   const triggers = computeHaltungTriggersFromMessage({ message: text });
@@ -385,7 +463,8 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
   return {
     rawEvent: { rawEventId, doc: rawEventDoc },
     validatedFacts,
-    factsDiff: { new: diffNew, ignored: diffIgnored },
+    factsDiff: { new: diffNew, updated: diffUpdated, ignored: diffIgnored },
+    factsChanges: changes,
     haltungDelta: {
       before: hBefore,
       after: hAfter,

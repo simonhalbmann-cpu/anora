@@ -225,18 +225,23 @@ console.log("✅ Phase 3.3 Check passed");
 
 
 
-const summariesForThisEvent = facts.filter(
-  (f: any) => f.key === "doc:summary" && f.sourceRef === rawEventId
+// doc:summary ist latest-only (Truth), nicht "pro rawEventId ein Fact".
+// Daher NICHT auf sourceRef filtern, sondern latest-only prüfen.
+const summaries = facts.filter((f: any) => f.key === "doc:summary");
+assert(summaries.length >= 1, "doc:summary missing in facts_v1");
+
+const summariesLatest = facts.filter(
+  (f: any) => f.key === "doc:summary" && f.meta?.latest === true
 );
 
 assert(
-  summariesForThisEvent.length === 1,
-  `doc:summary duplicated for rawEventId=${rawEventId}: ${summariesForThisEvent.length}`
+  summariesLatest.length === 1,
+  `latest-only violated for doc:summary: ${summariesLatest.length}`
 );
 
 assert(
-  summariesForThisEvent[0]?.meta?.latest === true,
-  `doc:summary for rawEventId=${rawEventId} is missing meta.latest=true`
+  summariesLatest[0]?.meta?.latest === true,
+  `doc:summary latest is missing meta.latest=true`
 );
 
   assert(facts.length >= 3, "less than 3 facts stored");
