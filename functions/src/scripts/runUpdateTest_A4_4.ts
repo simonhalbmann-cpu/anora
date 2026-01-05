@@ -1,3 +1,5 @@
+
+
 import { strict as assert } from "assert";
 import admin from "firebase-admin";
 import "../core/facts/registryBootstrap";
@@ -10,6 +12,15 @@ async function main() {
     admin.initializeApp({ projectId: "demo-anora" });
   }
   const db = admin.firestore();
+
+  // --- Test-only Firestore refs (NICHT aus Executor importieren!) ---
+// WICHTIG: Executor schreibt Facts nach: core/{userId}/facts/{factId}
+const factRef = (userId: string, factId: string) =>
+  db.collection("core").doc(userId).collection("facts").doc(factId);
+
+// WICHTIG: Executor schreibt History nach: brain/{userId}/fact_history_v1/{historyId}
+const factHistoryCol = (userId: string) =>
+  db.collection("brain").doc(userId).collection("fact_history_v1");
 
   const userId = `u_update_a4_4_${Date.now()}`;
 
@@ -42,36 +53,34 @@ async function main() {
   assert.ok(out2.persistence.counts.factsUpserted >= 1);
 
   // facts_v1 -> rent_cold muss 900 sein
-  const factsSnap = await db
-    .collection("brain")
-    .doc(userId)
-    .collection("facts_v1")
-    .where("key", "==", "rent_cold")
-    .get();
+  const rentFact2 = out2.validatedFacts.find((f: any) => f.key === "rent_cold");
+assert.ok(rentFact2?.factId, "missing rent_cold factId in out2.validatedFacts");
 
-  assert.equal(factsSnap.size, 1, "expected exactly 1 latest rent_cold fact");
-  const fact = factsSnap.docs[0].data();
-  assert.equal(fact.value, 900, "expected latest rent_cold=900");
+const rentSnap = await factRef(userId, String(rentFact2.factId)).get();
+assert.equal(rentSnap.exists, true, "expected rent_cold fact doc to exist");
+const rentDoc: any = rentSnap.data();
+
+assert.equal(rentDoc.key, "rent_cold", "expected key=rent_cold");
+assert.equal(rentDoc.value, 900, "expected latest rent_cold=900");
 
   // history -> mindestens 2 Einträge (created + updated)
-  const histSnap = await db
-    .collection("brain")
-    .doc(userId)
-    .collection("fact_history_v1")
-    .where("key", "==", "rent_cold")
-    .get();
+  const histSnap = await factHistoryCol(userId)
+  .where("factId", "==", String(rentFact2.factId))
+  .get();
 
-  assert.ok(histSnap.size >= 2, `expected >=2 history entries, got ${histSnap.size}`);
+assert.ok(histSnap.size >= 2, `expected >=2 history entries, got ${histSnap.size}`);
 
-  const kinds = histSnap.docs.map((d) => String(d.data().kind));
-  assert.ok(kinds.includes("created"), "expected history to include kind=created");
-  assert.ok(kinds.includes("updated"), "expected history to include kind=updated");
+const kinds = histSnap.docs.map((d) => String(d.data().kind));
+assert.ok(kinds.includes("created"), "expected history to include kind=created");
+assert.ok(kinds.includes("updated"), "expected history to include kind=updated");
+
+  
 
   console.log("✅ A4.4 UPDATE+HISTORY TEST PASSED", {
     factsUpserted_run1: out1.persistence.counts.factsUpserted,
     factsUpserted_run2: out2.persistence.counts.factsUpserted,
     historyCount: histSnap.size,
-    latestRentCold: fact.value,
+    latestRentCold: rentDoc.value,
   });
 }
 
