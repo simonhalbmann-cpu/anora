@@ -3,6 +3,7 @@
 
 import admin from "firebase-admin";
 import type { RunCoreOnceOutput } from "../runCoreOnce";
+import { sha256Hex } from "../utils/hash";
 import { stableStringify } from "../utils/stableStringify";
 import type { CoreWritePlanV1, PersistenceResultV1 } from "./types";
 
@@ -10,6 +11,7 @@ export let __EXECUTOR_CALLS__ = 0;
 export function __resetExecutorCalls__() {
   __EXECUTOR_CALLS__ = 0;
 }
+
 function canonicalizeFactDocForNoop(doc: any): any {
   if (!doc || typeof doc !== "object") return doc;
 
@@ -23,6 +25,10 @@ function canonicalizeFactDocForNoop(doc: any): any {
   } = doc;
 
   return rest;
+}
+
+function buildHistoryId(params: { factId: string; sourceRef: string; kind: "created" | "updated" }) {
+  return sha256Hex(`history::${params.factId}::${params.sourceRef}::${params.kind}`);
 }
 
 // NOTE: This file is intentionally impure. It may import Firestore/admin later.
@@ -62,7 +68,7 @@ export async function executeWritePlanV1(
   try {
 
 // CJS-safe lazy load (ts-node + tsc output)
-const { rawEventRef, factRef, haltungRef } = require("./firestoreExecutorV1");
+const { rawEventRef, factRef, haltungRef, factHistoryRef } = require("./firestoreExecutorV1");
 
   // We write exactly what the plan allows. Nothing else.
   const db = admin.firestore();
@@ -133,6 +139,31 @@ const batch = db.batch();
 
     batch.set(ref, nextDoc, { merge: true });
     factsUpserted += 1;
+
+const kind: "created" | "updated" = prev ? "updated" : "created";
+const historyId = buildHistoryId({
+  factId,
+  sourceRef: nextDoc.sourceRef,
+  kind,
+});
+
+batch.set(
+  factHistoryRef(userId, historyId),
+  {
+    historyId,
+    factId,
+    entityId: nextDoc.entityId,
+    domain: nextDoc.domain,
+    key: nextDoc.key,
+    kind,
+    prev: prev ? canonicalizeFactDocForNoop(prev) : null,
+    next: canonicalizeFactDocForNoop(nextDoc),
+    sourceRef: nextDoc.sourceRef,
+    createdAt: now,
+  },
+  { merge: false }
+);
+    
   }
 }
 

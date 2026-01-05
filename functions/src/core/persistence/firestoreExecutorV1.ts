@@ -18,3 +18,12 @@ export function factRef(userId: string, factId: string) {
 export function haltungRef(userId: string) {
   return coreUserRoot(userId).collection("haltung").doc("v1");
 }
+
+export function factHistoryRef(userId: string, historyId: string) {
+  return admin
+    .firestore()
+    .collection("brain")
+    .doc(userId)
+    .collection("fact_history_v1")
+    .doc(historyId);
+}
