@@ -163,8 +163,7 @@ const batch = db.batch();
     }
 
     // Nur wenn wir wirklich schreiben: updatedAt setzen
-    // Nur wenn wir wirklich schreiben: updatedAt setzen
-const nextDoc = { ...nextBase, updatedAt: now };
+    const nextDoc = { ...nextBase, updatedAt: now };
 
 // ✅ evId SOFORT berechnen (wir brauchen es für supersedes)
 const evId = buildEvidenceId({ factId, sourceRef: String(nextDoc.sourceRef) });
