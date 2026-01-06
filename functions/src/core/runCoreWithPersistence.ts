@@ -80,6 +80,7 @@ if (res.reason === "noop") {
     dryRun: false,
     wrote: false,
     reason: "noop",
+    counts: res.counts,
   };
   return { ...out, persistence, writePlan };
 }

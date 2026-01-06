@@ -35,6 +35,11 @@ const factHistoryCol = (userId: string) =>
     dryRun: false,
   });
 
+  if (out1.persistence.reason === "failed") {
+    console.error("❌ PERSISTENCE FAILED (RUN 1):", out1.persistence.error);
+    process.exit(1);
+  }
+
   assert.equal(out1.persistence.dryRun, false);
   assert.equal(out1.persistence.reason, "executed");
   assert.equal(out1.persistence.counts.rawEventsAppended, 1);
@@ -46,6 +51,11 @@ const factHistoryCol = (userId: string) =>
     text: t2,
     dryRun: false,
   });
+
+if (out2.persistence.reason === "failed") {
+    console.error("❌ PERSISTENCE FAILED (RUN 2):", out2.persistence.error);
+    process.exit(1);
+  }
 
   assert.equal(out2.persistence.dryRun, false);
   assert.equal(out2.persistence.reason, "executed");

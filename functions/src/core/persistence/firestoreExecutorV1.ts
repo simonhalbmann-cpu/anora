@@ -27,3 +27,21 @@ export function factHistoryRef(userId: string, historyId: string) {
     .collection("fact_history_v1")
     .doc(historyId);
 }
+
+export function evidenceRef(userId: string, evidenceId: string) {
+  return admin
+    .firestore()
+    .collection("brain")
+    .doc(userId)
+    .collection("evidence_v1")
+    .doc(evidenceId);
+}
+
+export function supersedesRef(userId: string, factId: string) {
+  return admin
+    .firestore()
+    .collection("brain")
+    .doc(userId)
+    .collection("supersedes_v1")
+    .doc(factId);
+}

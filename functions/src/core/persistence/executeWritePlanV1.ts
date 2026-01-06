@@ -8,6 +8,7 @@ import { stableStringify } from "../utils/stableStringify";
 import type { CoreWritePlanV1, PersistenceResultV1 } from "./types";
 
 export let __EXECUTOR_CALLS__ = 0;
+
 export function __resetExecutorCalls__() {
   __EXECUTOR_CALLS__ = 0;
 }
@@ -15,16 +16,21 @@ export function __resetExecutorCalls__() {
 function canonicalizeFactDocForNoop(doc: any): any {
   if (!doc || typeof doc !== "object") return doc;
 
-  const {
-    // volatile fields: raus für NOOP-Vergleich
-    updatedAt,
-    createdAt,
+ const {
+  updatedAt,
+  createdAt,
 
-    // Rest bleibt
-    ...rest
-  } = doc;
+  // wichtig: sourceRef soll KEIN Update triggern
+  sourceRef,
+
+  ...rest
+} = doc;
 
   return rest;
+}
+
+function buildEvidenceId(params: { factId: string; sourceRef: string }) {
+  return sha256Hex(`evidence::${params.factId}::${params.sourceRef}`);
 }
 
 function buildHistoryId(params: { factId: string; sourceRef: string; kind: "created" | "updated" }) {
@@ -61,14 +67,21 @@ export async function executeWritePlanV1(
     return {
       wrote: false,
       reason: "noop",
-      counts: { rawEventsAppended: 0, factsUpserted: 0, haltungPatched: 0 },
+      counts: {
+  rawEventsAppended: 0,
+  factsUpserted: 0,
+  haltungPatched: 0,
+  historyAppended: 0,
+  evidenceAppended: 0,
+},
     };
   }
 
   try {
 
 // CJS-safe lazy load (ts-node + tsc output)
-const { rawEventRef, factRef, haltungRef, factHistoryRef } = require("./firestoreExecutorV1");
+const { rawEventRef, factRef, haltungRef, factHistoryRef, evidenceRef } =
+  require("./firestoreExecutorV1");
 
   // We write exactly what the plan allows. Nothing else.
   const db = admin.firestore();
@@ -77,12 +90,27 @@ const batch = db.batch();
   let rawEventsAppended = 0;
   let factsUpserted = 0;
   let haltungPatched = 0;
+  let historyAppended = 0;
+  let evidenceAppended = 0;
 
   if (wantsRawEvent) {
-    const { rawEventId, doc } = input.out.rawEvent;
-    batch.set(rawEventRef(userId, rawEventId), doc, { merge: false });
+  const { rawEventId, doc } = input.out.rawEvent;
+  const ref = rawEventRef(userId, rawEventId);
+
+  // Idempotenz: wenn rawEvent bereits existiert und identisch ist -> NICHT schreiben
+  const snap = await ref.get();
+  if (snap.exists) {
+    const prev = snap.data();
+    const same = stableStringify(prev) === stableStringify(doc);
+    if (!same) {
+      batch.set(ref, doc, { merge: false });
+      rawEventsAppended = 1;
+    }
+  } else {
+    batch.set(ref, doc, { merge: false });
     rawEventsAppended = 1;
   }
+}
 
   if (wantsFacts) {
   // Upsert NUR für Facts, die laut factsDiff "new" sind
@@ -135,10 +163,54 @@ const batch = db.batch();
     }
 
     // Nur wenn wir wirklich schreiben: updatedAt setzen
-    const nextDoc = { ...nextBase, updatedAt: now };
+    // Nur wenn wir wirklich schreiben: updatedAt setzen
+const nextDoc = { ...nextBase, updatedAt: now };
 
-    batch.set(ref, nextDoc, { merge: true });
-    factsUpserted += 1;
+// ✅ evId SOFORT berechnen (wir brauchen es für supersedes)
+const evId = buildEvidenceId({ factId, sourceRef: String(nextDoc.sourceRef) });
+
+// Fact schreiben
+batch.set(ref, nextDoc, { merge: true });
+factsUpserted += 1;
+
+// ✅ Supersedes: wenn UPDATE, dann alte Evidence markieren
+if (prev && typeof (prev as any)?.sourceRef === "string" && String((prev as any).sourceRef).trim()) {
+  const prevEvId = buildEvidenceId({ factId, sourceRef: String((prev as any).sourceRef) });
+
+  // Nur superseden, wenn es wirklich eine andere Evidence ist
+  if (prevEvId !== evId) {
+    batch.set(
+      evidenceRef(userId, prevEvId),
+      {
+        supersededBy: evId,
+        supersededAt: now,
+      },
+      { merge: true }
+    );
+  }
+}
+
+// Neue Evidence schreiben
+batch.set(
+  evidenceRef(userId, evId),
+  {
+    evidenceId: evId,
+    factId,
+    entityId: nextDoc.entityId,
+    domain: nextDoc.domain,
+    key: nextDoc.key,
+    sourceRef: nextDoc.sourceRef,
+    rawEventId: input.out.rawEvent.rawEventId,
+    createdAt: now,
+
+    // optional aber sauber:
+    supersededBy: null,
+    supersededAt: null,
+  },
+  { merge: false }
+);
+
+evidenceAppended += 1;
 
 const kind: "created" | "updated" = prev ? "updated" : "created";
 const historyId = buildHistoryId({
@@ -163,6 +235,10 @@ batch.set(
   },
   { merge: false }
 );
+
+historyAppended += 1;
+
+
     
   }
 }
@@ -180,12 +256,39 @@ batch.set(
     haltungPatched = 1;
   }
 
+const totalWrites =
+  rawEventsAppended +
+  factsUpserted +
+  haltungPatched +
+  historyAppended +
+  evidenceAppended;
+
+if (totalWrites === 0) {
+  return {
+    wrote: false,
+    reason: "noop",
+    counts: {
+      rawEventsAppended: 0,
+      factsUpserted: 0,
+      haltungPatched: 0,
+      historyAppended: 0,
+      evidenceAppended: 0,
+    },
+  };
+}
+
   await batch.commit();
 
   return {
     wrote: true,
     reason: "executed",
-    counts: { rawEventsAppended, factsUpserted, haltungPatched },
+    counts: {
+  rawEventsAppended,
+  factsUpserted,
+  haltungPatched,
+  historyAppended,
+  evidenceAppended,
+},
   };
 } catch (e: any) {
   return {
