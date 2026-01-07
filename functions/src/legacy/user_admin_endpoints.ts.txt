@@ -1,0 +1,197 @@
+﻿export const resetUserKnowledge = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId } = body ?? {};
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    logger.info("resetUserKnowledge_request", { userId });
+
+    await wipeUserKnowledge(userId);
+
+    res.status(200).json({
+      ok: true,
+      message: "Wissen fÃ¼r diesen Nutzer wurde vollstÃ¤ndig zurÃ¼ckgesetzt.",
+    });
+  } catch (err) {
+    logger.error("resetUserKnowledge_error", err);
+    res.status(500).json({ error: "Internal server error in resetUserKnowledge" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: Anoras PersÃ¶nlichkeit fÃ¼r einen User zurÃ¼cksetzen
+// (heute nur meta/personality lÃ¶schen â€“ vorbereitet fÃ¼r v2)
+// ------------------------------------------------------------
+export const resetUserPersonality = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId } = body ?? {};
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    logger.info("resetUserPersonality_request", { userId });
+
+    await resetUserPersonalityData(userId);
+
+    res.status(200).json({
+      ok: true,
+      message: "Anoras PersÃ¶nlichkeit fÃ¼r diesen Nutzer wurde zurÃ¼ckgesetzt.",
+    });
+  } catch (err) {
+    logger.error("resetUserPersonality_error", err);
+    res
+      .status(500)
+      .json({ error: "Internal server error in resetUserPersonality" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: Anora User Profile â€“ lesen / aktualisieren
+// ------------------------------------------------------------
+export const anoraUserProfile = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    if (!body) {
+      res.status(400).json({ error: "Missing request body" });
+      return;
+    }
+
+    const { userId, profile } = body;
+
+    // userId validieren â€“ gleiche Logik wie bei anoraChat
+    if (typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("anoraUserProfile_invalid_userId_pattern", {
+        rawUserId: userId,
+      });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // Wenn kein profile-Objekt mitkommt â†’ nur lesen
+    if (!profile || typeof profile !== "object") {
+      const existing = await getUserMetaProfileForUser(trimmedUserId);
+      res.status(200).json({
+        ok: true,
+        userId: trimmedUserId,
+        profile: existing,
+      });
+      return;
+    }
+
+    // Schlanke Validierung der Felder
+    const update: Partial<UserMetaProfile> = {};
+
+    if (
+      typeof profile.displayName === "string" &&
+      profile.displayName.trim()
+    ) {
+      update.displayName = profile.displayName.trim().slice(0, 100);
+    }
+
+    if (typeof profile.role === "string" && profile.role.trim()) {
+      update.role = profile.role.trim().slice(0, 100);
+    }
+
+    if (typeof profile.defaultCity === "string" && profile.defaultCity.trim()) {
+      update.defaultCity = profile.defaultCity.trim().slice(0, 100);
+    }
+
+    if (
+      typeof profile.defaultPostal === "string" &&
+      profile.defaultPostal.trim()
+    ) {
+      update.defaultPostal = profile.defaultPostal.trim().slice(0, 20);
+    }
+
+    if (typeof profile.notes === "string" && profile.notes.trim()) {
+      update.notes = profile.notes.trim().slice(0, 1000);
+    }
+
+    // Wenn nach der Bereinigung nichts Ã¼brig ist â†’ einfach aktuelles Profil zurÃ¼ckgeben
+    if (Object.keys(update).length === 0) {
+      const existing = await getUserMetaProfileForUser(trimmedUserId);
+      res.status(200).json({
+        ok: true,
+        userId: trimmedUserId,
+        profile: existing,
+      });
+      return;
+    }
+
+    const merged = await setUserMetaProfileForUser(trimmedUserId, update);
+
+    logger.info("anoraUserProfile_updated", {
+      userId: trimmedUserId,
+      updateKeys: Object.keys(update),
+    });
+
+    res.status(200).json({
+      ok: true,
+      userId: trimmedUserId,
+      profile: merged,
+    });
+  } catch (err) {
+    logger.error("anoraUserProfile_error", { error: String(err) });
+    res
+      .status(500)
+      .json({ error: "Internal server error in anoraUserProfile" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: ingestRawDocumentText (Punkt 2 â€“ bewusst ohne Facts)
+// ------------------------------------------------------------

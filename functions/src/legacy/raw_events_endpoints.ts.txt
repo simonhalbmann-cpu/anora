@@ -1,0 +1,137 @@
+﻿export const getRawEvent = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, rawEventId } = body ?? {};
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("getRawEvent_invalid_userId_pattern", { rawUserId: userId });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    if (!rawEventId || typeof rawEventId !== "string" || !rawEventId.trim()) {
+      res.status(400).json({ error: "Missing or invalid rawEventId" });
+      return;
+    }
+
+    const id = rawEventId.trim();
+
+    const data = await getRawEventById(trimmedUserId, id);
+    if (!data) {
+      res.status(404).json({ ok: false, error: "RawEvent not found" });
+      return;
+    }
+
+    res.status(200).json({
+      ok: true,
+      id,
+      event: data,
+    });
+  } catch (err) {
+    logger.error("getRawEvent_error", { error: String(err) });
+    res.status(500).json({ error: "Internal server error in getRawEvent" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: listRawEvents (Mini-Polish 2.5)
+// ------------------------------------------------------------
+export const listRawEvents = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, limit, from, to, sourceType } = body ?? {};
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("listRawEvents_invalid_userId_pattern", { rawUserId: userId });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // limit absichern
+    let safeLimit = 50;
+    if (typeof limit === "number" && Number.isFinite(limit)) {
+      safeLimit = Math.min(Math.max(Math.floor(limit), 1), 200);
+    }
+
+    // from/to absichern
+    let safeFrom: number | undefined = undefined;
+    let safeTo: number | undefined = undefined;
+
+    if (typeof from === "number" && Number.isFinite(from) && from > 0) {
+      safeFrom = Math.floor(from);
+    }
+    if (typeof to === "number" && Number.isFinite(to) && to > 0) {
+      safeTo = Math.floor(to);
+    }
+
+    // sourceType absichern (v0: nur ingest_document_text)
+    let safeSourceType: "ingest_document_text" | undefined = undefined;
+    if (typeof sourceType === "string" && sourceType === "ingest_document_text") {
+      safeSourceType = "ingest_document_text";
+    }
+
+    const items = await listRawEventsFromStore({
+  userId: trimmedUserId,
+  limit: safeLimit,
+  from: safeFrom,
+  to: safeTo,
+  sourceType: safeSourceType,
+});
+
+    res.status(200).json({
+      ok: true,
+      userId: trimmedUserId,
+      count: items.length,
+      items,
+    });
+  } catch (err) {
+    logger.error("listRawEvents_error", { error: String(err) });
+    res.status(500).json({ error: "Internal server error in listRawEvents" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: ingestDocumentText
+// ------------------------------------------------------------

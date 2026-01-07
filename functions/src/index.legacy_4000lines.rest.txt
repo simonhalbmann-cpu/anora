@@ -1,0 +1,1788 @@
+﻿// functions/src/index.ts
+
+import dotenvx from "dotenv";
+import * as admin from "firebase-admin";
+import * as logger from "firebase-functions/logger";
+import { onRequest } from "firebase-functions/v2/https";
+import { httpHandler } from "./entry/httpHandler";
+
+// export name wie du willst (api, ingest, http, v1, etc.)
+export const anoraChat = onRequest(httpHandler);
+export const api = anoraChat;
+
+// ---- Umgebungsvariablen laden (.env im functions-Ordner) ----
+dotenvx.config();
+
+// ------------------------------------------------------------
+// Globale Limits fÃ¼r StabilitÃ¤t (Antworten, Kontext, Wissen)
+// ------------------------------------------------------------
+const MAX_REPLY_LENGTH = 2000;         // maximale LÃ¤nge der KI-Antwort Richtung Client
+const MAX_FACTS_PER_PROMPT = 50;       // wie viele Facts gehen maximal in den Prompt
+const MAX_HISTORY_TURNS = 8;           // wie viele Chat-Nachrichten gehen in den Prompt
+const MAX_USER_MESSAGE_LENGTH = 2000;  // wie lang darf eine einzelne User-Nachricht Richtung Modell sein
+const MAX_KNOWLEDGE_SUMMARY_LENGTH = 4000; // harte Kappung des Wissen-Blocks im Prompt
+const MAX_HISTORY_SUMMARY_LENGTH = 2000;   // harte Kappung des Verlauf-Blocks im Prompt
+
+// ------------------------------------------------------------
+// SAFETY GUARD: Niemals versehentlich gegen echte Google APIs schreiben
+// Wenn Functions Emulator lÃ¤uft, MUSS Firestore Emulator aktiv sein.
+// ------------------------------------------------------------
+const isLikelyFunctionsEmulator =
+  process.env.FUNCTIONS_EMULATOR === "true" ||
+  !!process.env.FIREBASE_EMULATOR_HUB ||
+  // firebase-tools setzt das oft in Emulator-Runs:
+  !!process.env.FUNCTION_TARGET ||
+  // sehr grob, aber in Emulator fast immer vorhanden:
+  (process.env.GCLOUD_PROJECT === "anoraapp-ai" &&
+    process.env.NODE_ENV !== "production");
+
+if (isLikelyFunctionsEmulator && !process.env.FIRESTORE_EMULATOR_HOST) {
+  throw new Error(
+    "SAFETY GUARD: FIRESTORE_EMULATOR_HOST ist nicht gesetzt. " +
+      "Du wÃ¼rdest gegen echte Google APIs/Firestore schreiben. " +
+      "Starte: firebase emulators:start --only functions,firestore"
+  );
+}
+
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
+
+const db = admin.firestore();
+
+// ------------------------------------------------------------
+// Generische Meta-Helper fÃ¼r brain/{userId}/meta/{key}
+// ------------------------------------------------------------
+type MetaContextDoc = {
+  updatedAt: number;
+  [key: string]: any;
+};
+
+async function setMetaContext(
+  userId: string,
+  key: string,
+  payload: Record<string, any>
+): Promise<void> {
+  const ref = db
+    .collection("brain")
+    .doc(userId)
+    .collection("meta")
+    .doc(key);
+
+  const doc = {
+    ...payload,
+    updatedAt: Date.now(),
+  };
+
+  await ref.set(doc, { merge: true });
+
+  // ðŸ” zentrales Logging fÃ¼r ALLE Meta-Writes
+  logger.info("meta_write", {
+    userId,
+    metaKey: key,
+    payloadKeys: Object.keys(payload),
+    hasUpdatedAt: !!doc.updatedAt,
+  });
+}
+
+async function getMetaContext(
+  userId: string,
+  key: string
+): Promise<MetaContextDoc | null> {
+  const ref = db
+    .collection("brain")
+    .doc(userId)
+    .collection("meta")
+    .doc(key);
+
+  const snap = await ref.get();
+  if (!snap.exists) return null;
+
+  return snap.data() as MetaContextDoc;
+}
+
+async function clearMetaContext(userId: string, key: string): Promise<void> {
+  const ref = db
+    .collection("brain")
+    .doc(userId)
+    .collection("meta")
+    .doc(key);
+
+  await ref.delete();
+
+  // ðŸ” zentrales Logging fÃ¼r Meta-LÃ¶schungen
+  logger.info("meta_clear", {
+    userId,
+    metaKey: key,
+  });
+}
+
+
+// ------------------------------------------------------------
+// Spezielle Reset-Helper fÃ¼r einzelne Kontexte
+// ------------------------------------------------------------
+
+// Beispiel: Kontext "letzter Mieter" zurÃ¼cksetzen
+async function resetTenantContext(userId: string): Promise<void> {
+  await clearMetaContext(userId, "tenantContext");
+}
+
+// propertyContext: aktuelles Objekt / letzte Immobilie
+async function resetPropertyContext(userId: string): Promise<void> {
+  await clearMetaContext(userId, "propertyContext");
+}
+
+async function resetCityContext(userId: string): Promise<void> {
+  await clearMetaContext(userId, "cityContext");
+}
+
+async function setTenantContext(userId: string, value: Record<string, any>) {
+  await setMetaContext(userId, "tenantContext", value);
+}
+
+async function setPropertyContext(
+  userId: string,
+  value: Record<string, any>
+) {
+  await setMetaContext(userId, "propertyContext", value);
+}
+
+async function setCityContext(userId: string, value: Record<string, any>) {
+  await setMetaContext(userId, "cityContext", value);
+}
+
+
+
+// ------------------------------------------------------------
+
+// ---- MOVED OUT: parse/sanitize block (lines 157..2601) ----
+
+
+    // ------------------------------------------------------------
+// PHASE 4.2.3: Guard anwenden â€“ Core-Grenzen erzwingen
+// ------------------------------------------------------------
+const guard = enforceCoreResponseBoundaries(safeResult.reply);
+
+if (!guard.ok) {
+  logger.warn("core_guard_violation", {
+    userId: input.userId,
+    violations: guard.violations,
+  });
+
+  // Harte Grenze: neutrale, sichere Antwort.
+  // Keine Actions/Tasks/NewFacts â€“ nichts Autonomes ausfÃ¼hren.
+  safeResult.reply =
+    "Ich kann dabei nicht helfen, etwas Eskalierendes/Manipulatives zu formulieren. " +
+    "Sag mir stattdessen kurz das Ziel (z.B. sachlich klÃ¤ren, rechtlich prÃ¼fen, nÃ¤chsten Schritt planen), " +
+    "dann formuliere ich es neutral und sauber.";
+
+  safeResult.actions = [];
+  safeResult.tasks = [];
+  safeResult.newFacts = [];
+} else {
+  logger.info("core_guard_ok", { userId: input.userId });
+}
+
+    // ðŸ‘‰ WICHTIG:
+    // - Nur "actions" werden serverseitig interpretiert (z.B. reset_context / set_context).
+    // - "tasks" sind ausschlieÃŸlich Hinweise fÃ¼r die UI / den Nutzer.
+    // - Der Server lÃ¶st KEINE Cronjobs, Push-Tasks oder sonstige Aktionen aus Tasks aus.
+    //
+    // Damit bleibt Anora explizit nicht-autonom: sie schlÃ¤gt nur vor, der Mensch entscheidet und handelt.
+
+    if (safeResult.actions.length > 0) {
+  await executeBrainActions(input.userId, safeResult.actions);
+}
+
+if (safeResult.newFacts.length > 0) {
+  // Legacy-BrainFacts werden NICHT mehr persistiert.
+  // newFacts dienen nur noch als transienter Kontext.
+  await updatePropertyContextFromNewFacts(input.userId, safeResult.newFacts);
+  await updateMietrechtContextFromFacts(input.userId, safeResult.newFacts);
+}
+
+try {
+  // Minimal: persistiere ALLE Chat-Facts 1:1 als "chat.memory" in facts_v1
+  // (spÃ¤ter kÃ¶nnen wir property/tenant sauber mappen)
+  const toUpsert = safeResult.newFacts.map((f, idx) => ({
+    domain: "chat",
+    key: "memory",
+    entityId: `user:${input.userId}`, // simpel, stabil
+    value: {
+      type: f.type,
+      tags: Array.isArray(f.tags) ? f.tags : [],
+      data: f.data ?? {},
+      raw: f.raw ?? "",
+      seq: idx,
+    },
+    meta: {
+      source: "chat",
+      ts: Date.now(),
+    },
+  }));
+
+  const r = await upsertManyFacts(input.userId, toUpsert as any);
+
+  logger.info("chat_memory_upserted_v1", {
+    userId: input.userId,
+    count: toUpsert.length,
+    result: r,
+  });
+} catch (err) {
+  logger.error("chat_memory_upsert_failed_v1", {
+    userId: input.userId,
+    error: String(err),
+  });
+}
+
+    // Presence-Logik v1: Kandidaten aus Chat + Tasks prÃ¼fen
+    // - passiv, keine Autohandlungen
+    // - strikt rate-limitiert
+    try {
+      await generatePresenceFromChatIfAllowed(input.userId, input, safeResult);
+    } catch (err) {
+      logger.error("presence_generation_failed", {
+        userId: input.userId,
+        error: String(err),
+      });
+    }
+
+    const response: BrainOutput = safeResult;
+
+    res.status(200).json(response);
+
+  } catch (err) {
+    logger.error("Fehler in anoraChat:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ------------------------------------------------------------
+// Presence: letzte sichtbare Presence-Karte laden
+// (statt nur status == "pending")
+// ------------------------------------------------------------
+async function getLatestVisiblePresenceEvent(
+  userId: string
+): Promise<{ id: string; data: PresenceEventDoc } | null> {
+  const col = db
+    .collection("brain")
+    .doc(userId)
+    .collection("presenceEvents");
+
+  const now = Date.now();
+
+  // NEU: Themen-Block-Meta laden
+  const topicMeta = await getPresenceTopicMeta(userId);
+
+  // Wir holen die letzten ~50 Events nach Zeit, filtern dann im Code
+  const snap = await col
+    .orderBy("createdAt", "desc")
+    .limit(50)
+    .get();
+
+  if (snap.empty) return null;
+
+  for (const doc of snap.docs) {
+    const data = doc.data() as PresenceEventDoc;
+
+    // 0) Themen-Block prÃ¼fen (Topic global geblockt?)
+    if (data.topic) {
+      const t = data.topic as PresenceTopic;
+      const state = topicMeta[t];
+      if (
+        state &&
+        typeof state.blockedUntil === "number" &&
+        state.blockedUntil > now
+      ) {
+        // dieses Thema ist gerade global geblockt -> nicht anzeigen
+        continue;
+      }
+    }
+
+    // 1) Themen, die explizit abgeschaltet wurden, NIE mehr anzeigen
+    if (data.status === "dismissed") {
+      continue;
+    }
+
+    // 2) Snoozed-Events nur anzeigen, wenn ihre Snooze-Zeit abgelaufen ist
+    if (
+      data.status === "snoozed" &&
+      typeof data.snoozedUntil === "number" &&
+      data.snoozedUntil > now
+    ) {
+      continue;
+    }
+
+    // 3) Alles andere (pending, shown, alte snoozed) ist sichtbar
+    return { id: doc.id, data };
+  }
+
+  // nichts Sichtbares gefunden
+  return null;
+}
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: Anora Presence â€“ nÃ¤chste Presence-Karte laden
+// ------------------------------------------------------------
+export const anoraPresence = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    if (!body) {
+      res.status(400).json({ error: "Missing request body" });
+      return;
+    }
+
+    const { userId } = body;
+
+    // userId validieren â€“ gleiche Logik wie bei anoraChat
+    if (typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("anoraPresence_invalid_userId_pattern", {
+        rawUserId: userId,
+      });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // Presence-Opt-out respektieren
+    const enabled = await isPresenceEnabledForUser(trimmedUserId);
+    if (!enabled) {
+      logger.info("anoraPresence_opt_out_active", { userId: trimmedUserId });
+      res.status(200).json({
+        ok: true,
+        event: null,
+      });
+      return;
+    }
+
+    // Neu: letzte sichtbare Presence holen
+    const next = await getLatestVisiblePresenceEvent(trimmedUserId);
+    if (!next) {
+      // Kein Event -> einfach ok + null zurÃ¼ckgeben
+      res.status(200).json({
+        ok: true,
+        event: null,
+      });
+      return;
+    }
+
+    logger.info("anoraPresence_next_event", {
+      userId: trimmedUserId,
+      eventId: next.id,
+      type: next.data.type,
+      status: next.data.status,
+    });
+
+    res.status(200).json({
+      id: next.id,
+      event: next.data,
+    });
+  } catch (err) {
+    logger.error("anoraPresence_error", { error: String(err) });
+    res
+      .status(500)
+      .json({ error: "Internal server error in anoraPresence" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: Anora Presence Action â€“ Button-Aktion speichern
+// ------------------------------------------------------------
+export const anoraPresenceAction = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    if (!body) {
+      res.status(400).json({ error: "Missing request body" });
+      return;
+    }
+
+    const { userId, eventId, action } = body;
+
+    // userId validieren â€“ gleiche Logik wie bei anoraChat
+    if (typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("anoraPresenceAction_invalid_userId_pattern", {
+        rawUserId: userId,
+      });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // eventId prÃ¼fen
+    if (typeof eventId !== "string" || !eventId.trim()) {
+      res.status(400).json({ error: "Missing or invalid eventId" });
+      return;
+    }
+
+    // action prÃ¼fen
+    if (
+      action !== "view_now" &&
+      action !== "snooze" &&
+      action !== "disable"
+    ) {
+      res.status(400).json({ error: "Invalid action" });
+      return;
+    }
+
+   const now = Date.now();
+
+    // 1) Falls "disable": Event laden und Thema bestimmen
+    let topicToBlock: PresenceTopic | null = null;
+
+    if (action === "disable") {
+      try {
+        const eventSnap = await db
+          .collection("brain")
+          .doc(trimmedUserId)
+          .collection("presenceEvents")
+          .doc(eventId.trim())
+          .get();
+
+        if (eventSnap.exists) {
+          const data = eventSnap.data() as PresenceEventDoc;
+
+          if (data.topic) {
+  topicToBlock = data.topic;
+}
+        }
+      } catch (err) {
+        logger.error("anoraPresenceAction_load_event_failed", {
+          userId: trimmedUserId,
+          eventId,
+          error: String(err),
+        });
+      }
+    }
+
+    // 2) Status-Update vorbereiten
+    let updates: {
+      status?: PresenceEventStatus;
+      shownAt?: number | null;
+      dismissedAt?: number | null;
+      snoozedUntil?: number | null;
+    } = {};
+
+    if (action === "view_now") {
+      updates = {
+        status: "shown",
+        shownAt: now,
+      };
+    } else if (action === "snooze") {
+      const THREE_HOURS = 3 * 60 * 60 * 1000;
+      updates = {
+        status: "snoozed",
+        snoozedUntil: now + THREE_HOURS,
+      };
+    } else if (action === "disable") {
+      updates = {
+        status: "dismissed",
+        dismissedAt: now,
+      };
+    }
+
+    // 2) Event-Status in Firestore schreiben
+    await updatePresenceEventStatus(
+      trimmedUserId,
+      eventId.trim(),
+      updates
+    );
+
+    // 3) Falls "disable": Themen fÃ¼r 90 Tage muten
+    // 3) Falls "disable": Thema fÃ¼r 90 Tage blocken (presenceTopics-Meta)
+    if (action === "disable" && topicToBlock) {
+      const BLOCK_DURATION_DAYS = 90;
+      const BLOCK_DURATION_MS = BLOCK_DURATION_DAYS * 24 * 60 * 60 * 1000;
+      const blockedUntil = now + BLOCK_DURATION_MS;
+
+      try {
+        await updatePresenceTopicMeta(
+          trimmedUserId,
+          topicToBlock,
+          blockedUntil,
+          now
+        );
+
+        logger.info("anoraPresenceAction_topic_block_set", {
+          userId: trimmedUserId,
+          eventId,
+          topic: topicToBlock,
+          blockedUntil,
+        });
+      } catch (err) {
+        logger.error("anoraPresenceAction_topic_block_failed", {
+          userId: trimmedUserId,
+          eventId,
+          topic: topicToBlock,
+          error: String(err),
+        });
+      }
+    }
+
+    logger.info("anoraPresenceAction_ok", {
+      userId: trimmedUserId,
+      eventId,
+      action,
+    });
+
+    res.status(200).json({
+      ok: true,
+    });
+
+  } catch (err) {
+    logger.error("anoraPresenceAction_error", { error: String(err) });
+    res
+      .status(500)
+      .json({ error: "Internal server error in anoraPresenceAction" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: Anora Presence Settings â€“ Presence ein/aus
+// ------------------------------------------------------------
+export const anoraPresenceSettings = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    if (!body) {
+      res.status(400).json({ error: "Missing request body" });
+      return;
+    }
+
+    const { userId, enabled } = body;
+
+    // userId validieren â€“ gleiche Logik wie bei anoraChat
+    if (typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("anoraPresenceSettings_invalid_userId_pattern", {
+        rawUserId: userId,
+      });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // enabled prÃ¼fen
+    if (typeof enabled !== "boolean") {
+      res.status(400).json({ error: "Missing or invalid enabled flag" });
+      return;
+    }
+
+    // Presence-Flag setzen
+    await setPresenceEnabledForUser(trimmedUserId, enabled);
+
+    logger.info("anoraPresenceSettings_ok", {
+      userId: trimmedUserId,
+      enabled,
+    });
+
+    res.status(200).json({
+      ok: true,
+      enabled, // <- das kommt aus dem Request-Body
+    });
+  } catch (err) {
+    logger.error("anoraPresenceSettings_error", { error: String(err) });
+    res
+      .status(500)
+      .json({ error: "Internal server error in anoraPresenceSettings" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: Presence Topics â€“ Themen muten / anzeigen
+// ------------------------------------------------------------
+export const anoraPresenceTopics = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    if (!body) {
+      res.status(400).json({ error: "Missing request body" });
+      return;
+    }
+
+    const { userId, topic, muted } = body;
+
+    // userId validieren â€“ gleiche Logik wie bei anoraChat
+    if (typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("anoraPresenceTopics_invalid_userId_pattern", {
+        rawUserId: userId,
+      });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // Wenn KEIN topic Ã¼bergeben wird -> nur aktuelle Topic-States zurÃ¼ckgeben
+    if (typeof topic !== "string") {
+      const topicMeta = await getPresenceTopicMeta(trimmedUserId);
+
+      logger.info("anoraPresenceTopics_read_only", {
+        userId: trimmedUserId,
+      });
+
+      res.status(200).json({
+        ok: true,
+        userId: trimmedUserId,
+        topics: topicMeta,
+      });
+      return;
+    }
+
+    // Ab hier: konkretes Topic muten / entmuten
+    // Wir erlauben nur die Themen, die wir real nutzen
+    const allowedTopics: PresenceTopic[] = [
+      "stress_cluster",
+      "money_decision",
+      "project_followup",
+      "location_watch",
+      "other",
+    ];
+
+    if (!allowedTopics.includes(topic as PresenceTopic)) {
+      res.status(400).json({ error: "Invalid topic" });
+      return;
+    }
+
+    if (typeof muted !== "boolean") {
+      res.status(400).json({ error: "Missing or invalid muted flag" });
+      return;
+    }
+
+    const now = Date.now();
+
+    // Wenn muted=true -> 90 Tage blocken
+    // Wenn muted=false -> Block aufheben (blockedUntil in die Vergangenheit setzen)
+    const BLOCK_DURATION_DAYS = 90;
+    const BLOCK_DURATION_MS = BLOCK_DURATION_DAYS * 24 * 60 * 60 * 1000;
+
+    const blockedUntil = muted ? now + BLOCK_DURATION_MS : 0;
+    const lastDisabledAt = muted ? now : now; // wir protokollieren einfach jetzt
+
+    await updatePresenceTopicMeta(
+      trimmedUserId,
+      topic as PresenceTopic,
+      blockedUntil,
+      lastDisabledAt
+    );
+
+    const topicMeta = await getPresenceTopicMeta(trimmedUserId);
+
+    logger.info("anoraPresenceTopics_topic_updated", {
+      userId: trimmedUserId,
+      topic,
+      muted,
+      blockedUntil,
+    });
+
+    res.status(200).json({
+      ok: true,
+      userId: trimmedUserId,
+      topics: topicMeta,
+    });
+  } catch (err) {
+    logger.error("anoraPresenceTopics_error", { error: String(err) });
+    res
+      .status(500)
+      .json({ error: "Internal server error in anoraPresenceTopics" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: komplettes Wissen eines Users lÃ¶schen
+// (Panic-Reset â€“ NUR aus Einstellungen aufrufen!)
+// ------------------------------------------------------------
+export const resetUserKnowledge = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId } = body ?? {};
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    logger.info("resetUserKnowledge_request", { userId });
+
+    await wipeUserKnowledge(userId);
+
+    res.status(200).json({
+      ok: true,
+      message: "Wissen fÃ¼r diesen Nutzer wurde vollstÃ¤ndig zurÃ¼ckgesetzt.",
+    });
+  } catch (err) {
+    logger.error("resetUserKnowledge_error", err);
+    res.status(500).json({ error: "Internal server error in resetUserKnowledge" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: Anoras PersÃ¶nlichkeit fÃ¼r einen User zurÃ¼cksetzen
+// (heute nur meta/personality lÃ¶schen â€“ vorbereitet fÃ¼r v2)
+// ------------------------------------------------------------
+export const resetUserPersonality = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId } = body ?? {};
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    logger.info("resetUserPersonality_request", { userId });
+
+    await resetUserPersonalityData(userId);
+
+    res.status(200).json({
+      ok: true,
+      message: "Anoras PersÃ¶nlichkeit fÃ¼r diesen Nutzer wurde zurÃ¼ckgesetzt.",
+    });
+  } catch (err) {
+    logger.error("resetUserPersonality_error", err);
+    res
+      .status(500)
+      .json({ error: "Internal server error in resetUserPersonality" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: Anora User Profile â€“ lesen / aktualisieren
+// ------------------------------------------------------------
+export const anoraUserProfile = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    if (!body) {
+      res.status(400).json({ error: "Missing request body" });
+      return;
+    }
+
+    const { userId, profile } = body;
+
+    // userId validieren â€“ gleiche Logik wie bei anoraChat
+    if (typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("anoraUserProfile_invalid_userId_pattern", {
+        rawUserId: userId,
+      });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // Wenn kein profile-Objekt mitkommt â†’ nur lesen
+    if (!profile || typeof profile !== "object") {
+      const existing = await getUserMetaProfileForUser(trimmedUserId);
+      res.status(200).json({
+        ok: true,
+        userId: trimmedUserId,
+        profile: existing,
+      });
+      return;
+    }
+
+    // Schlanke Validierung der Felder
+    const update: Partial<UserMetaProfile> = {};
+
+    if (
+      typeof profile.displayName === "string" &&
+      profile.displayName.trim()
+    ) {
+      update.displayName = profile.displayName.trim().slice(0, 100);
+    }
+
+    if (typeof profile.role === "string" && profile.role.trim()) {
+      update.role = profile.role.trim().slice(0, 100);
+    }
+
+    if (typeof profile.defaultCity === "string" && profile.defaultCity.trim()) {
+      update.defaultCity = profile.defaultCity.trim().slice(0, 100);
+    }
+
+    if (
+      typeof profile.defaultPostal === "string" &&
+      profile.defaultPostal.trim()
+    ) {
+      update.defaultPostal = profile.defaultPostal.trim().slice(0, 20);
+    }
+
+    if (typeof profile.notes === "string" && profile.notes.trim()) {
+      update.notes = profile.notes.trim().slice(0, 1000);
+    }
+
+    // Wenn nach der Bereinigung nichts Ã¼brig ist â†’ einfach aktuelles Profil zurÃ¼ckgeben
+    if (Object.keys(update).length === 0) {
+      const existing = await getUserMetaProfileForUser(trimmedUserId);
+      res.status(200).json({
+        ok: true,
+        userId: trimmedUserId,
+        profile: existing,
+      });
+      return;
+    }
+
+    const merged = await setUserMetaProfileForUser(trimmedUserId, update);
+
+    logger.info("anoraUserProfile_updated", {
+      userId: trimmedUserId,
+      updateKeys: Object.keys(update),
+    });
+
+    res.status(200).json({
+      ok: true,
+      userId: trimmedUserId,
+      profile: merged,
+    });
+  } catch (err) {
+    logger.error("anoraUserProfile_error", { error: String(err) });
+    res
+      .status(500)
+      .json({ error: "Internal server error in anoraUserProfile" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: ingestRawDocumentText (Punkt 2 â€“ bewusst ohne Facts)
+// ------------------------------------------------------------
+export const ingestRawDocumentText = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, text, meta, locale } = body ?? {};
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+    if (!text || typeof text !== "string" || text.trim().length < 20) {
+      res.status(400).json({ error: "Missing or too short text" });
+      return;
+    }
+
+    const safeMeta = {
+      filename: meta?.filename ?? null,
+      mimeType: meta?.mimeType ?? null,
+      source: meta?.source ?? null,
+    };
+
+    const ts = Date.now();
+    const bucket = dayBucketUTC(ts);
+
+    // Dedup v0: stabiler Hash Ã¼ber (sourceType + text + bucket + meta-hints)
+    const sourceType = "ingest_document_text";
+    const hashInput =
+      `${sourceType}\n${bucket}\n` +
+      `filename:${safeMeta.filename ?? ""}\nsource:${safeMeta.source ?? ""}\n` +
+      text;
+
+    const ingestHash = sha256(hashInput);
+
+    // Optional: Duplicate markieren (nicht lÃ¶schen)
+    // Wir suchen 1 Event mit gleichem ingestHash.
+    // Wenn Firestore ohne Index meckert, lassen wir das im nÃ¤chsten Schritt indexen.
+    let isDuplicate = false;
+    let duplicateOf: string | null = null;
+
+    try {
+      const snap = await admin
+        .firestore()
+        .collection("brain")
+        .doc(userId)
+        .collection("rawEvents")
+        .where("ingestHash", "==", ingestHash)
+        .orderBy("timestamp", "desc")
+        .limit(1)
+        .get();
+
+      if (!snap.empty) {
+        isDuplicate = true;
+        duplicateOf = snap.docs[0].id;
+      }
+// PHASE 1: harte Dedupe-Regel
+// Wenn identischer Ingest gefunden: KEIN neues RawEvent anlegen, bestehende ID zurÃ¼ckgeben.
+if (duplicateOf) {
+  logger.info("rawEvent_dedup_reuse", {
+    userId,
+    ingestHash,
+    duplicateOf,
+  });
+
+  res.status(200).json({
+    ok: true,
+    rawEventId: duplicateOf,
+    ingestHash,
+    isDuplicate: true,
+    duplicateOf,
+    reused: true,
+  });
+  return;
+}
+
+    } catch (e) {
+      // Dedup ist optional in v0. Wir loggen nur.
+      logger.warn("rawEvent_dedup_check_failed", { userId, error: String(e) });
+    }
+
+    const doc: RawEventDoc = {
+      timestamp: ts,
+      sourceType,
+      userRef: userId,
+      locale: typeof locale === "string" ? locale : "de-DE",
+      payload: { text },
+      meta: safeMeta,
+      ingestHash,
+      dayBucket: bucket,
+      isDuplicate,
+      duplicateOf,
+      note: null,
+    };
+
+    logger.info("rawEvent_append_request", {
+      userId,
+      sourceType,
+      textLength: text.length,
+      ingestHash,
+      isDuplicate,
+    });
+
+    const rawEventId = await appendRawEvent(userId, doc);
+
+    logger.info("rawEvent_append_success", {
+      userId,
+      rawEventId,
+      ingestHash,
+      isDuplicate,
+      duplicateOf,
+    });
+
+    res.status(200).json({
+      ok: true,
+      rawEventId,
+      ingestHash,
+      isDuplicate,
+      duplicateOf,
+    });
+  } catch (err) {
+    logger.error("ingestRawDocumentText_error", { error: String(err) });
+    res.status(500).json({ error: "Internal server error in ingestRawDocumentText" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: getRawEvent (Mini-Polish 2.5)
+// ------------------------------------------------------------
+export const getRawEvent = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, rawEventId } = body ?? {};
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("getRawEvent_invalid_userId_pattern", { rawUserId: userId });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    if (!rawEventId || typeof rawEventId !== "string" || !rawEventId.trim()) {
+      res.status(400).json({ error: "Missing or invalid rawEventId" });
+      return;
+    }
+
+    const id = rawEventId.trim();
+
+    const data = await getRawEventById(trimmedUserId, id);
+    if (!data) {
+      res.status(404).json({ ok: false, error: "RawEvent not found" });
+      return;
+    }
+
+    res.status(200).json({
+      ok: true,
+      id,
+      event: data,
+    });
+  } catch (err) {
+    logger.error("getRawEvent_error", { error: String(err) });
+    res.status(500).json({ error: "Internal server error in getRawEvent" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: listRawEvents (Mini-Polish 2.5)
+// ------------------------------------------------------------
+export const listRawEvents = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, limit, from, to, sourceType } = body ?? {};
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("listRawEvents_invalid_userId_pattern", { rawUserId: userId });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // limit absichern
+    let safeLimit = 50;
+    if (typeof limit === "number" && Number.isFinite(limit)) {
+      safeLimit = Math.min(Math.max(Math.floor(limit), 1), 200);
+    }
+
+    // from/to absichern
+    let safeFrom: number | undefined = undefined;
+    let safeTo: number | undefined = undefined;
+
+    if (typeof from === "number" && Number.isFinite(from) && from > 0) {
+      safeFrom = Math.floor(from);
+    }
+    if (typeof to === "number" && Number.isFinite(to) && to > 0) {
+      safeTo = Math.floor(to);
+    }
+
+    // sourceType absichern (v0: nur ingest_document_text)
+    let safeSourceType: "ingest_document_text" | undefined = undefined;
+    if (typeof sourceType === "string" && sourceType === "ingest_document_text") {
+      safeSourceType = "ingest_document_text";
+    }
+
+    const items = await listRawEventsFromStore({
+  userId: trimmedUserId,
+  limit: safeLimit,
+  from: safeFrom,
+  to: safeTo,
+  sourceType: safeSourceType,
+});
+
+    res.status(200).json({
+      ok: true,
+      userId: trimmedUserId,
+      count: items.length,
+      items,
+    });
+  } catch (err) {
+    logger.error("listRawEvents_error", { error: String(err) });
+    res.status(500).json({ error: "Internal server error in listRawEvents" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: ingestDocumentText
+// ------------------------------------------------------------
+export const ingestDocumentText = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, text, meta } = body ?? {};
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    if (!text || typeof text !== "string" || text.trim().length < 20) {
+      res.status(400).json({
+        error:
+          "Missing or too short text â€“ bitte den vollstÃ¤ndigen Dokumenttext senden.",
+      });
+      return;
+    }
+
+    const cleanText =
+      text.length > 15000 ? text.slice(0, 15000) + "\n\n[TEXT GEKÃœRZT]" : text;
+
+    const safeMeta = {
+      filename: meta?.filename ?? null,
+      mimeType: meta?.mimeType ?? null,
+      source: meta?.source ?? null,
+    };
+
+    logger.info("ingestDocumentText_request", {
+      userId,
+      filename: safeMeta.filename,
+      mimeType: safeMeta.mimeType,
+      textLength: cleanText.length,
+    });
+
+
+    const { ingestRealEstateDocumentText } = await import("./domains/real_estate/index.js");
+
+const result = await ingestRealEstateDocumentText(
+  { userId, locale: "de-DE" },
+  { text: cleanText, meta: safeMeta }
+);
+
+    logger.info("ingestDocumentText_success", {
+      userId,
+      factsSaved: result.factsSaved,
+    });
+
+    res.status(200).json({
+      ok: true,
+      factsSaved: result.factsSaved,
+    });
+    
+  } catch (err) {
+    logger.error("ingestDocumentText_error", err);
+    res
+      .status(500)
+      .json({ error: "Internal server error in ingestDocumentText" });
+  }
+});// ------------------------------------------------------------
+// HTTPS Endpoint: Anora User Profile â€“ kompakte User-Sicht
+// ------------------------------------------------------------
+export const anoraUserOverview = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    if (!body) {
+      res.status(400).json({ error: "Missing request body" });
+      return;
+    }
+
+    const { userId } = body;
+
+    // userId validieren â€“ gleiche Logik wie bei anoraChat
+    if (typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("anoraUserProfile_invalid_userId_pattern", {
+        rawUserId: userId,
+      });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // Relevante Metadaten / Kontexte und Presence Settings parallel laden
+    const [
+      tenantMeta,
+      propertyMeta,
+      mietrechtContext,
+      presenceSettings,
+      presenceTopics,
+    ] = await Promise.all([
+      getMetaContext(trimmedUserId, "tenantContext"),
+      getMetaContext(trimmedUserId, "propertyContext"),
+      getMietrechtContextForUser(trimmedUserId),
+      getPresenceSettingsForUser(trimmedUserId),
+      getPresenceTopicMeta(trimmedUserId), // <- NEU
+    ]);
+
+    logger.info("anoraUserProfile_ok", {
+      userId: trimmedUserId,
+    });
+
+    res.status(200).json({
+      ok: true,
+      userId: trimmedUserId,
+      contexts: {
+        tenant: tenantMeta ?? null,
+        property: propertyMeta ?? null,
+        mietrecht: mietrechtContext ?? null,
+      },
+      presence: {
+        ...presenceSettings,
+        topics: presenceTopics ?? {}, // <- NEU
+      },
+    });
+  } catch (err) {
+    logger.error("anoraUserProfile_error", { error: String(err) });
+    res
+      .status(500)
+      .json({ error: "Internal server error in anoraUserProfile" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: Debug â€“ Mietrechts-/City-Kontext fÃ¼r einen User
+// ------------------------------------------------------------
+export const debugMietrechtContext = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    if (!body) {
+      res.status(400).json({ error: "Missing request body" });
+      return;
+    }
+
+    const { userId } = body;
+
+    // userId validieren â€“ gleiche Logik wie bei anoraChat
+    if (typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const trimmedUserId = userId.trim();
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(trimmedUserId)) {
+      logger.warn("debugMietrechtContext_invalid_userId_pattern", {
+        rawUserId: userId,
+      });
+      res.status(400).json({ error: "Invalid userId format" });
+      return;
+    }
+
+    // "schÃ¶ne" Mietrechts-Sicht (abgeleitet)
+    const mietrechtContext = await getMietrechtContextForUser(trimmedUserId);
+
+    // rohe Meta-Daten aus cityContext (falls du sehen willst, was genau drin steht)
+    const rawCityMeta = await getMetaContext(trimmedUserId, "cityContext");
+
+    res.status(200).json({
+      ok: true,
+      userId: trimmedUserId,
+      mietrechtContext,
+      rawCityMeta,
+    });
+  } catch (err) {
+    logger.error("debugMietrechtContext_error", { error: String(err) });
+    res
+      .status(500)
+      .json({ error: "Internal server error in debugMietrechtContext" });
+  }
+});
+
+// ------------------------------------------------------------
+// Test-Endpoint: Document-Strategie prÃ¼fen (Hybrid-Variante)
+// ------------------------------------------------------------
+export const testDocumentStrategy = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    const body = req.body || {};
+
+    const input: DocumentInput = {
+      mimeType: typeof body.mimeType === "string" ? body.mimeType : "",
+      pages: typeof body.pages === "number" ? body.pages : 0,
+      textChars: typeof body.textChars === "number" ? body.textChars : 0,
+      isScanned: !!body.isScanned,
+      hasTables: !!body.hasTables,
+      quality:
+        body.quality === "low" ||
+        body.quality === "medium" ||
+        body.quality === "high"
+          ? body.quality
+          : "medium",
+    };
+
+    const decision = decideDocumentProcessingStrategy(input);
+
+    res.status(200).json({
+      ok: true,
+      input,
+      decision,
+    });
+  } catch (err) {
+    logger.error("Fehler in testDocumentStrategy:", err);
+    res.status(500).json({ ok: false, error: "internal error" });
+  }
+});
+
+export const resolveEntityV1 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ ok: false, error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ ok: false, error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const userId = String(body?.userId ?? "").trim();
+    const domain = body?.domain ?? "generic";
+    const type = body?.type ?? "generic";
+    const fingerprint = String(body?.fingerprint ?? "");
+
+    const opts: any = { userId, domain, type, fingerprint };
+
+if (typeof body?.label === "string" && body.label.trim()) {
+  opts.label = body.label.trim();
+}
+
+if (body?.meta && typeof body.meta === "object") {
+  opts.meta = body.meta;
+}
+
+const out = await getOrCreateEntityIdByFingerprint(opts);
+
+    res.status(200).json({ ok: true, ...out });
+  } catch (err) {
+    logger.error("resolveEntityV1_error", { error: String(err) });
+    res.status(500).json({ ok: false, error: "Internal error" });
+  }
+});
+
+// ------------------------------------------------------------
+// DEBUG Endpoint: upsertFactsV1 (Roadmap 3.3 Test)
+// ------------------------------------------------------------
+export const upsertFactsV1 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, facts } = body ?? {};
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+    if (!Array.isArray(facts)) {
+      res.status(400).json({ error: "Missing or invalid facts array" });
+      return;
+    }
+
+    const result = await upsertManyFacts(userId.trim(), facts);
+
+    res.status(200).json({ ok: true, ...result });
+  } catch (err) {
+    logger.error("upsertFactsV1_error", { error: String(err) });
+    res.status(500).json({ ok: false, error: "Internal error" });
+  }
+});
+
+// ------------------------------------------------------------
+// DEBUG Endpoint: extractFactsV1 (Roadmap 3.7 Test)
+// ------------------------------------------------------------
+export const extractFactsV1 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, extractorId, text, meta, locale } = body ?? {};
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const id = String(extractorId ?? "real_estate.v1").trim();
+    const ex = getExtractor(id);
+    if (!ex) {
+      res.status(400).json({ error: `Unknown extractorId: ${id}` });
+      return;
+    }
+
+    const payload = { text: typeof text === "string" ? text : "" };
+
+    const result = await ex.extract({
+      rawEventId: "debug",
+      locale: typeof locale === "string" ? locale : "de-DE",
+      sourceType: "debug_extract",
+      payload,
+      meta: meta && typeof meta === "object" ? meta : {},
+    });
+
+    res.status(200).json({
+      ok: true,
+      extractorId: id,
+      factsCount: result.facts?.length ?? 0,
+      warnings: result.warnings ?? [],
+      // bewusst keine Facts im Detail zurÃ¼ck, weil spÃ¤ter groÃŸ sein kann;
+      // wenn du willst, schalten wir es im Debug frei.
+    });
+  } catch (err) {
+    logger.error("extractFactsV1_error", { error: String(err) });
+    res.status(500).json({ ok: false, error: "Internal error" });
+  }
+});
+
+// ------------------------------------------------------------
+// V1 Runner: RawEvent -> Extractor -> facts_v1
+// Roadmap 3.8
+// ------------------------------------------------------------
+export const runExtractorOnRawEventV1 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ ok: false, error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ ok: false, error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const userId = String(body?.userId ?? "").trim();
+    const rawEventId = String(body?.rawEventId ?? "").trim();
+    const extractorId = String(body?.extractorId ?? "real_estate.v1").trim();
+
+    // userId validieren (gleiches Pattern wie bei anoraChat)
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(userId)) {
+      res.status(400).json({ ok: false, error: "Invalid userId format" });
+      return;
+    }
+    if (!rawEventId) {
+      res.status(400).json({ ok: false, error: "Missing rawEventId" });
+      return;
+    }
+
+    // 1) RawEvent laden
+    const raw = await getRawEventById(userId, rawEventId);
+    if (!raw) {
+      res.status(404).json({ ok: false, error: "RawEvent not found" });
+      return;
+    }
+
+// 2) Runner (ausgelagert)
+const out = await runExtractorOnRawEventV1Core({
+  userId,
+  rawEventId,
+  extractorId,
+  raw,
+});
+
+res.status(200).json(out);
+return;
+
+  } catch (err) {
+    logger.error("runExtractorOnRawEventV1_error", { error: String(err) });
+    res.status(500).json({ ok: false, error: "Internal error" });
+  }
+});
+
+
+// ------------------------------------------------------------
+// V1 Runner: RawEvent -> ALL Extractors -> facts_v1
+// Roadmap 4.2
+// ------------------------------------------------------------
+export const runAllExtractorsOnRawEventV1 = onRequest(
+  { timeoutSeconds: 180, memory: "1GiB" },
+  async (req, res) => {
+    try {
+    if (req.method !== "POST") {
+      res.status(405).json({ ok: false, error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ ok: false, error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const userId = String(body?.userId ?? "").trim();
+    const rawEventId = String(body?.rawEventId ?? "").trim();
+    const extractorIds = Array.isArray(body?.extractorIds) ? body.extractorIds.map((x: any) => String(x)) : undefined;
+
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(userId)) {
+      res.status(400).json({ ok: false, error: "Invalid userId format" });
+      return;
+    }
+    if (!rawEventId) {
+      res.status(400).json({ ok: false, error: "Missing rawEventId" });
+      return;
+    }
+
+    const raw = await getRawEventById(userId, rawEventId);
+    if (!raw) {
+      res.status(404).json({ ok: false, error: "RawEvent not found" });
+      return;
+    }
+
+    const out = await runAllExtractorsOnRawEventV1Core({
+      userId,
+      rawEventId,
+      raw,
+      extractorIds,
+    });
+
+    res.status(200).json(out);
+  } catch (err) {
+    logger.error("runAllExtractorsOnRawEventV1_error", { error: String(err) });
+    res.status(500).json({ ok: false, error: "Internal error" }
+      
+    );
+  }
+});
+
+
+// ------------------------------------------------------------
+// DEBUG Endpoint: listFactsV1 (Roadmap 3.3 Test)
+// ------------------------------------------------------------
+export const listFactsV1 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, entityId, key, domain, limit } = body ?? {};
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+
+    const items = await queryFacts(userId.trim(), {
+      entityId: typeof entityId === "string" ? entityId : undefined,
+      key: typeof key === "string" ? key : undefined,
+      domain: typeof domain === "string" ? domain : undefined,
+      limit: typeof limit === "number" ? limit : 50,
+    });
+
+    res.status(200).json({
+      ok: true,
+      userId: userId.trim(),
+      count: items.length,
+      items,
+    });
+  } catch (err) {
+    logger.error("listFactsV1_error", { error: String(err) });
+    res.status(500).json({ ok: false, error: "Internal error" });
+  }
+});

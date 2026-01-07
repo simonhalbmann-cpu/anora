@@ -9,7 +9,8 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "lint": "eslint \"src/**/*.{ts,tsx,js,jsx}\"",
-    "lint:pure": "eslint \"src/core/runCoreOnce.ts\" \"src/core/runCoreWithPersistence.ts\" \"src/core/bridgePure.ts\" \"src/scripts/**/*.{ts,tsx,js,jsx}\""
+    "lint:pure": "eslint \"src/core/runCoreOnce.ts\" \"src/core/runCoreWithPersistence.ts\" \"src/core/bridgePure.ts\" \"src/scripts/**/*.{ts,tsx,js,jsx}\"",
+    "test:phase11": "powershell -ExecutionPolicy Bypass -File .\\src\\scripts\\runPhase11Suite.ps1"
   },
   "engines": {
     "node": "22"

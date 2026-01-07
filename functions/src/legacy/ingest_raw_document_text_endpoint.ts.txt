@@ -1,0 +1,141 @@
+﻿export const ingestRawDocumentText = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const { userId, text, meta, locale } = body ?? {};
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "Missing or invalid userId" });
+      return;
+    }
+    if (!text || typeof text !== "string" || text.trim().length < 20) {
+      res.status(400).json({ error: "Missing or too short text" });
+      return;
+    }
+
+    const safeMeta = {
+      filename: meta?.filename ?? null,
+      mimeType: meta?.mimeType ?? null,
+      source: meta?.source ?? null,
+    };
+
+    const ts = Date.now();
+    const bucket = dayBucketUTC(ts);
+
+    // Dedup v0: stabiler Hash Ã¼ber (sourceType + text + bucket + meta-hints)
+    const sourceType = "ingest_document_text";
+    const hashInput =
+      `${sourceType}\n${bucket}\n` +
+      `filename:${safeMeta.filename ?? ""}\nsource:${safeMeta.source ?? ""}\n` +
+      text;
+
+    const ingestHash = sha256(hashInput);
+
+    // Optional: Duplicate markieren (nicht lÃ¶schen)
+    // Wir suchen 1 Event mit gleichem ingestHash.
+    // Wenn Firestore ohne Index meckert, lassen wir das im nÃ¤chsten Schritt indexen.
+    let isDuplicate = false;
+    let duplicateOf: string | null = null;
+
+    try {
+      const snap = await admin
+        .firestore()
+        .collection("brain")
+        .doc(userId)
+        .collection("rawEvents")
+        .where("ingestHash", "==", ingestHash)
+        .orderBy("timestamp", "desc")
+        .limit(1)
+        .get();
+
+      if (!snap.empty) {
+        isDuplicate = true;
+        duplicateOf = snap.docs[0].id;
+      }
+// PHASE 1: harte Dedupe-Regel
+// Wenn identischer Ingest gefunden: KEIN neues RawEvent anlegen, bestehende ID zurÃ¼ckgeben.
+if (duplicateOf) {
+  logger.info("rawEvent_dedup_reuse", {
+    userId,
+    ingestHash,
+    duplicateOf,
+  });
+
+  res.status(200).json({
+    ok: true,
+    rawEventId: duplicateOf,
+    ingestHash,
+    isDuplicate: true,
+    duplicateOf,
+    reused: true,
+  });
+  return;
+}
+
+    } catch (e) {
+      // Dedup ist optional in v0. Wir loggen nur.
+      logger.warn("rawEvent_dedup_check_failed", { userId, error: String(e) });
+    }
+
+    const doc: RawEventDoc = {
+      timestamp: ts,
+      sourceType,
+      userRef: userId,
+      locale: typeof locale === "string" ? locale : "de-DE",
+      payload: { text },
+      meta: safeMeta,
+      ingestHash,
+      dayBucket: bucket,
+      isDuplicate,
+      duplicateOf,
+      note: null,
+    };
+
+    logger.info("rawEvent_append_request", {
+      userId,
+      sourceType,
+      textLength: text.length,
+      ingestHash,
+      isDuplicate,
+    });
+
+    const rawEventId = await appendRawEvent(userId, doc);
+
+    logger.info("rawEvent_append_success", {
+      userId,
+      rawEventId,
+      ingestHash,
+      isDuplicate,
+      duplicateOf,
+    });
+
+    res.status(200).json({
+      ok: true,
+      rawEventId,
+      ingestHash,
+      isDuplicate,
+      duplicateOf,
+    });
+  } catch (err) {
+    logger.error("ingestRawDocumentText_error", { error: String(err) });
+    res.status(500).json({ error: "Internal server error in ingestRawDocumentText" });
+  }
+});
+
+// ------------------------------------------------------------
+// HTTPS Endpoint: getRawEvent (Mini-Polish 2.5)
+// ------------------------------------------------------------
+
+// ---- MOVED OUT: legacy/raw_events_endpoints.ts.txt (lines 314..450) ----
+

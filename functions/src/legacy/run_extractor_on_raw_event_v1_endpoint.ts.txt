@@ -1,0 +1,59 @@
+﻿export const runExtractorOnRawEventV1 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ ok: false, error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ ok: false, error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const userId = String(body?.userId ?? "").trim();
+    const rawEventId = String(body?.rawEventId ?? "").trim();
+    const extractorId = String(body?.extractorId ?? "real_estate.v1").trim();
+
+    // userId validieren (gleiches Pattern wie bei anoraChat)
+    const userIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
+    if (!userIdPattern.test(userId)) {
+      res.status(400).json({ ok: false, error: "Invalid userId format" });
+      return;
+    }
+    if (!rawEventId) {
+      res.status(400).json({ ok: false, error: "Missing rawEventId" });
+      return;
+    }
+
+    // 1) RawEvent laden
+    const raw = await getRawEventById(userId, rawEventId);
+    if (!raw) {
+      res.status(404).json({ ok: false, error: "RawEvent not found" });
+      return;
+    }
+
+// 2) Runner (ausgelagert)
+const out = await runExtractorOnRawEventV1Core({
+  userId,
+  rawEventId,
+  extractorId,
+  raw,
+});
+
+res.status(200).json(out);
+return;
+
+  } catch (err) {
+    logger.error("runExtractorOnRawEventV1_error", { error: String(err) });
+    res.status(500).json({ ok: false, error: "Internal error" });
+  }
+});
+
+
+// ------------------------------------------------------------
+// V1 Runner: RawEvent -> ALL Extractors -> facts_v1
+// Roadmap 4.2
+// ------------------------------------------------------------

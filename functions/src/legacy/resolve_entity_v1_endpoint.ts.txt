@@ -1,0 +1,42 @@
+﻿export const resolveEntityV1 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ ok: false, error: "Only POST allowed" });
+      return;
+    }
+
+    let body: any = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {
+        res.status(400).json({ ok: false, error: "Invalid JSON body" });
+        return;
+      }
+    }
+
+    const userId = String(body?.userId ?? "").trim();
+    const domain = body?.domain ?? "generic";
+    const type = body?.type ?? "generic";
+    const fingerprint = String(body?.fingerprint ?? "");
+
+    const opts: any = { userId, domain, type, fingerprint };
+
+if (typeof body?.label === "string" && body.label.trim()) {
+  opts.label = body.label.trim();
+}
+
+if (body?.meta && typeof body.meta === "object") {
+  opts.meta = body.meta;
+}
+
+const out = await getOrCreateEntityIdByFingerprint(opts);
+
+    res.status(200).json({ ok: true, ...out });
+  } catch (err) {
+    logger.error("resolveEntityV1_error", { error: String(err) });
+    res.status(500).json({ ok: false, error: "Internal error" });
+  }
+});
+
+// ------------------------------------------------------------
+// DEBUG Endpoint: upsertFactsV1 (Roadmap 3.3 Test)
+// ------------------------------------------------------------

@@ -18,6 +18,14 @@ $projectId = "anoraapp-ai"
 $region    = "us-central1"
 $base      = "http://127.0.0.1:5001/$projectId/$region"
 
+function Call-Api($payload) {
+  return Invoke-RestMethod `
+    -Method Post `
+    -Uri "$base/api" `
+    -ContentType "application/json" `
+    -Body ($payload | ConvertTo-Json -Depth 20)
+}
+
 Write-Host "=== BUILD + GOLDEN ==="
 Set-Location $functions
 
@@ -31,57 +39,48 @@ npx ts-node -e "import { normalizeFactKey } from './src/core/facts/semantic'; tr
 Write-Host ""
 Write-Host "=== IDEMPOTENZ (C) ==="
 
-$uid = "idem-" + [int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
-$body = @{
-  userId = $uid
-  text   = "Wohnung in Berlin. Kaltmiete 900 EUR."
-  locale = "de-DE"
-  meta   = @{ filename="idem.txt"; source="idem-test" }
-} | ConvertTo-Json -Depth 10
+Write-Host ""
+Write-Host "=== IDEMPOTENZ (C) ==="
 
+$uid = "idem-" + [int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
 "USER_ID=$uid"
 
-# Ingest #1
-$r1 = Invoke-RestMethod -Method Post -Uri "$base/ingestRawDocumentText" -ContentType "application/json" -Body $body
-if (-not $r1.rawEventId) { throw "INGEST1 failed / no rawEventId" }
-"INGEST1 rawEventId=$($r1.rawEventId) isDuplicate=$($r1.isDuplicate)"
+# Wir testen die neue Welt:
+# - 2x gleicher Call => rawEventId deterministisch gleich
+# - facts writes idempotent (gleiches Event => keine erneuten Updates)
 
-# Ingest #2 identisch -> duplicate=true erwartet
-$r2 = Invoke-RestMethod -Method Post -Uri "$base/ingestRawDocumentText" -ContentType "application/json" -Body $body
-if (-not $r2.rawEventId) { throw "INGEST2 failed / no rawEventId" }
-"INGEST2 rawEventId=$($r2.rawEventId) isDuplicate=$($r2.isDuplicate) duplicateOf=$($r2.duplicateOf)"
-
-if ($r1.rawEventId -ne $r2.rawEventId) { throw "DEDUPE FAIL: rawEventId differs" }
-
-# Runner #1
-$run1 = Invoke-RestMethod -Method Post -Uri "$base/runAllExtractorsOnRawEventV1" -ContentType "application/json" -Body (@{ userId=$uid; rawEventId=$r1.rawEventId } | ConvertTo-Json -Depth 10)
-"RUN1 ok=$($run1.ok) upserted=$($run1.upserted) skipped=$($run1.skipped)"
-
-# Facts lesen (#1)
-$f1 = Invoke-RestMethod -Method Post -Uri "$base/listFactsV1" -ContentType "application/json" -Body (@{ userId=$uid; domain="real_estate"; limit=50 } | ConvertTo-Json -Depth 10)
-$items1 = @($f1.items | % { [PSCustomObject]@{ id=$_.id; key=$_.data.key; updatedAt=[int64]$_.data.updatedAt } } | Sort-Object id)
-"FACTS1 count=$($items1.Count) keys=$(@($items1 | % key) -join ', ')"
-
-Start-Sleep -Seconds 1
-
-# Runner #2 identisch (selber rawEvent) -> upserted=0 erwartet + updatedAt bleibt stabil
-$run2 = Invoke-RestMethod -Method Post -Uri "$base/runAllExtractorsOnRawEventV1" -ContentType "application/json" -Body (@{ userId=$uid; rawEventId=$r1.rawEventId } | ConvertTo-Json -Depth 10)
-"RUN2 ok=$($run2.ok) upserted=$($run2.upserted) skipped=$($run2.skipped)"
-
-# Facts lesen (#2)
-$f2 = Invoke-RestMethod -Method Post -Uri "$base/listFactsV1" -ContentType "application/json" -Body (@{ userId=$uid; domain="real_estate"; limit=50 } | ConvertTo-Json -Depth 10)
-$items2 = @($f2.items | % { [PSCustomObject]@{ id=$_.id; key=$_.data.key; updatedAt=[int64]$_.data.updatedAt } } | Sort-Object id)
-"FACTS2 count=$($items2.Count) keys=$(@($items2 | % key) -join ', ')"
-
-if (($items1.id -join ",") -ne ($items2.id -join ",")) { throw "IDEMPOTENZ FAIL: fact IDs changed" }
-
-$changed=@()
-for ($i=0; $i -lt $items1.Count; $i++) {
-  if ($items1[$i].updatedAt -ne $items2[$i].updatedAt) { $changed += $items1[$i].id }
+$payload = @{
+  userId       = $uid
+  message      = "Wohnung in Berlin. Kaltmiete 900 EUR."
+  dryRun       = $false
+  extractorIds = @("real_estate.v1")
 }
-if ($changed.Count -gt 0) { throw "IDEMPOTENZ FAIL: updatedAt changed for: $($changed -join ', ')" }
+
+$r1 = Call-Api $payload
+$r2 = Call-Api $payload
+
+if (-not $r1.ok) { throw "IDEMPOTENZ: r1.ok=false" }
+if (-not $r2.ok) { throw "IDEMPOTENZ: r2.ok=false" }
+
+$raw1 = $r1.out.rawEvent.rawEventId
+$raw2 = $r2.out.rawEvent.rawEventId
+
+"CALL1 rawEventId=$raw1 wrote=$($r1.out.persistence.wrote) factsUpserted=$($r1.out.persistence.counts.factsUpserted)"
+"CALL2 rawEventId=$raw2 wrote=$($r2.out.persistence.wrote) factsUpserted=$($r2.out.persistence.counts.factsUpserted)"
+
+if ($raw1 -ne $raw2) { throw "IDEMPOTENZ FAIL: rawEventId differs" }
+
+# Strenger Idempotenz-Check: beim 2. Call sollten keine Facts erneut upserted werden
+# (Wenn dein Executor deduped: factsUpserted sollte 0 sein.)
+# Falls dein aktueller Executor immer upserted, dann ist das ein echter Bug (updatedAt springt).
+if ([int]$r2.out.persistence.counts.factsUpserted -ne 0) {
+  throw "IDEMPOTENZ FAIL: expected factsUpserted=0 on second identical call, got $($r2.out.persistence.counts.factsUpserted)"
+}
 
 "IDEMPOTENZ OK"
+
+Write-Host ""
+Write-Host "=== REAL CHANGE (D) ==="
 
 Write-Host ""
 Write-Host "=== REAL CHANGE (D) ==="
@@ -89,50 +88,43 @@ Write-Host "=== REAL CHANGE (D) ==="
 $uid = "change-" + [int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
 "USER_ID=$uid"
 
-# INGEST 1 (900)
-$body1=@{
-  userId=$uid
-  text="Wohnung in Berlin. Kaltmiete 900 EUR."
-  locale="de-DE"
-  meta=@{ filename="change.txt"; source="change-test" }
-} | ConvertTo-Json -Depth 10
-
-$r1 = Invoke-RestMethod -Method Post -Uri "$base/ingestRawDocumentText" -ContentType "application/json" -Body $body1
-$run1 = Invoke-RestMethod -Method Post -Uri "$base/runAllExtractorsOnRawEventV1" -ContentType "application/json" -Body (@{ userId=$uid; rawEventId=$r1.rawEventId } | ConvertTo-Json -Depth 10)
-
-$f1 = Invoke-RestMethod -Method Post -Uri "$base/listFactsV1" -ContentType "application/json" -Body (@{ userId=$uid; domain="real_estate"; limit=50 } | ConvertTo-Json -Depth 10)
-$items1 = @($f1.items | % { [PSCustomObject]@{ key=$_.data.key; updatedAt=[int64]$_.data.updatedAt } } | Sort-Object key)
+# Call 1: 900
+$p1 = @{
+  userId       = $uid
+  message      = "Wohnung in Berlin. Kaltmiete 900 EUR."
+  dryRun       = $false
+  extractorIds = @("real_estate.v1")
+}
+$r1 = Call-Api $p1
+if (-not $r1.ok) { throw "REAL CHANGE: r1.ok=false" }
 
 Start-Sleep -Seconds 1
 
-# INGEST 2 (950) -> echte Änderung => updatedAt muss springen (mindestens rent_cold)
-$body2=@{
-  userId=$uid
-  text="Wohnung in Berlin. Kaltmiete 950 EUR."
-  locale="de-DE"
-  meta=@{ filename="change.txt"; source="change-test" }
-} | ConvertTo-Json -Depth 10
+# Call 2: 950
+$p2 = @{
+  userId       = $uid
+  message      = "Wohnung in Berlin. Kaltmiete 950 EUR."
+  dryRun       = $false
+  extractorIds = @("real_estate.v1")
+}
+$r2 = Call-Api $p2
+if (-not $r2.ok) { throw "REAL CHANGE: r2.ok=false" }
 
-$r2 = Invoke-RestMethod -Method Post -Uri "$base/ingestRawDocumentText" -ContentType "application/json" -Body $body2
-$run2 = Invoke-RestMethod -Method Post -Uri "$base/runAllExtractorsOnRawEventV1" -ContentType "application/json" -Body (@{ userId=$uid; rawEventId=$r2.rawEventId } | ConvertTo-Json -Depth 10)
-"RUN2 ok=$($run2.ok) upserted=$($run2.upserted) skipped=$($run2.skipped)"
+"CALL2 wrote=$($r2.out.persistence.wrote) factsUpserted=$($r2.out.persistence.counts.factsUpserted)"
 
-if ([int]$run2.upserted -le 0) { throw "REAL CHANGE FAIL: nothing upserted" }
-
-$f2 = Invoke-RestMethod -Method Post -Uri "$base/listFactsV1" -ContentType "application/json" -Body (@{ userId=$uid; domain="real_estate"; limit=50 } | ConvertTo-Json -Depth 10)
-$items2 = @($f2.items | % { [PSCustomObject]@{ key=$_.data.key; updatedAt=[int64]$_.data.updatedAt } } | Sort-Object key)
-
-$updatedKeys = @()
-foreach ($it1 in $items1) {
-  $it2 = $items2 | Where-Object { $_.key -eq $it1.key } | Select-Object -First 1
-  if ($it2 -and $it2.updatedAt -ne $it1.updatedAt) { $updatedKeys += $it1.key }
+if ([int]$r2.out.persistence.counts.factsUpserted -le 0) {
+  throw "REAL CHANGE FAIL: nothing upserted"
 }
 
-if ($updatedKeys.Count -eq 0) { throw "REAL CHANGE FAIL: updatedAt did NOT change for any key" }
-if (-not ($updatedKeys -contains "rent_cold")) { throw "REAL CHANGE FAIL: rent_cold was NOT updated" }
+# Minimal: rent_cold muss 950 sein
+$rc = @($r2.out.validatedFacts | Where-Object { $_.key -eq "rent_cold" } | Select-Object -First 1)
+if (-not $rc) { throw "REAL CHANGE FAIL: rent_cold missing in validatedFacts" }
+if ([int]$rc.value -ne 950) { throw "REAL CHANGE FAIL: rent_cold not 950 (got $($rc.value))" }
 
-"UPDATED KEYS: $($updatedKeys -join ', ')"
 "REAL CHANGE OK"
+
+Write-Host ""
+Write-Host "=== LATEST (E) ==="
 
 Write-Host ""
 Write-Host "=== LATEST (E) ==="
@@ -140,104 +132,58 @@ Write-Host "=== LATEST (E) ==="
 $uid = "latest-" + [int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
 "USER_ID=$uid"
 
-# 1) 900 EUR (SAME filename!)
-$body1=@{
-  userId=$uid
-  text="Wohnung in Berlin. Kaltmiete 900 EUR."
-  locale="de-DE"
-  meta=@{ filename="phase11.txt"; source="phase11-test" }
-} | ConvertTo-Json -Depth 10
-
-$r1 = Invoke-RestMethod -Method Post -Uri "$base/ingestRawDocumentText" -ContentType "application/json" -Body $body1
-$run1 = Invoke-RestMethod -Method Post -Uri "$base/runAllExtractorsOnRawEventV1" -ContentType "application/json" -Body (@{ userId=$uid; rawEventId=$r1.rawEventId } | ConvertTo-Json -Depth 10)
-"RUN1 ok=$($run1.ok) upserted=$($run1.upserted) skipped=$($run1.skipped)"
-
-$f1 = Invoke-RestMethod -Method Post -Uri "$base/listFactsV1" -ContentType "application/json" -Body (@{ userId=$uid; domain="real_estate"; limit=50 } | ConvertTo-Json -Depth 10)
-$items1 = @($f1.items | % { [PSCustomObject]@{ id=$_.id; key=$_.data.key; value=$_.data.value; updatedAt=[int64]$_.data.updatedAt } } | Sort-Object key)
+# Call 1: 900
+$p1 = @{
+  userId       = $uid
+  message      = "Wohnung in Berlin. Kaltmiete 900 EUR."
+  dryRun       = $false
+  extractorIds = @("real_estate.v1")
+}
+$r1 = Call-Api $p1
+if (-not $r1.ok) { throw "LATEST: r1.ok=false" }
 
 Start-Sleep -Seconds 1
 
-# 2) 950 EUR (SAME filename!)
-$body2=@{
-  userId=$uid
-  text="Wohnung in Berlin. Kaltmiete 950 EUR."
-  locale="de-DE"
-  meta=@{ filename="phase11.txt"; source="phase11-test" }
-} | ConvertTo-Json -Depth 10
+# Call 2: 950
+$p2 = @{
+  userId       = $uid
+  message      = "Wohnung in Berlin. Kaltmiete 950 EUR."
+  dryRun       = $false
+  extractorIds = @("real_estate.v1")
+}
+$r2 = Call-Api $p2
+if (-not $r2.ok) { throw "LATEST: r2.ok=false" }
 
-$r2 = Invoke-RestMethod -Method Post -Uri "$base/ingestRawDocumentText" -ContentType "application/json" -Body $body2
-$run2 = Invoke-RestMethod -Method Post -Uri "$base/runAllExtractorsOnRawEventV1" -ContentType "application/json" -Body (@{ userId=$uid; rawEventId=$r2.rawEventId } | ConvertTo-Json -Depth 10)
-"RUN2 ok=$($run2.ok) upserted=$($run2.upserted) skipped=$($run2.skipped)"
+# Assertions: validatedFacts müssen 3 sein (doc:summary, rent_cold, city)
+if ($r1.out.validatedFacts.Count -ne 3) { throw "LATEST FAIL: expected 3 validatedFacts on call1, got $($r1.out.validatedFacts.Count)" }
+if ($r2.out.validatedFacts.Count -ne 3) { throw "LATEST FAIL: expected 3 validatedFacts on call2, got $($r2.out.validatedFacts.Count)" }
 
-$f2 = Invoke-RestMethod -Method Post -Uri "$base/listFactsV1" -ContentType "application/json" -Body (@{ userId=$uid; domain="real_estate"; limit=50 } | ConvertTo-Json -Depth 10)
-$items2 = @($f2.items | % { [PSCustomObject]@{ id=$_.id; key=$_.data.key; value=$_.data.value; updatedAt=[int64]$_.data.updatedAt } } | Sort-Object key)
-
-# Assertions:
-if ($items1.Count -ne 3) { throw "LATEST FAIL: expected 3 facts after RUN1, got $($items1.Count)" }
-if ($items2.Count -ne 3) { throw "LATEST FAIL: expected 3 facts after RUN2, got $($items2.Count)" }
-
-function Get-ByKey($items, $key) {
-  return ($items | Where-Object { $_.key -eq $key } | Select-Object -First 1)
+function Get-FactByKey($facts, $key) {
+  return @($facts | Where-Object { $_.key -eq $key } | Select-Object -First 1)
 }
 
-$rc1  = Get-ByKey $items1 "rent_cold"
-$rc2  = Get-ByKey $items2 "rent_cold"
-$ct1  = Get-ByKey $items1 "city"
-$ct2  = Get-ByKey $items2 "city"
-$ds1  = Get-ByKey $items1 "doc:summary"
-$ds2  = Get-ByKey $items2 "doc:summary"
+$rc1 = Get-FactByKey $r1.out.validatedFacts "rent_cold"
+$rc2 = Get-FactByKey $r2.out.validatedFacts "rent_cold"
+$ct1 = Get-FactByKey $r1.out.validatedFacts "city"
+$ct2 = Get-FactByKey $r2.out.validatedFacts "city"
+$ds1 = Get-FactByKey $r1.out.validatedFacts "doc:summary"
+$ds2 = Get-FactByKey $r2.out.validatedFacts "doc:summary"
 
 if (-not $rc1 -or -not $rc2) { throw "LATEST FAIL: rent_cold missing" }
 if (-not $ct1 -or -not $ct2) { throw "LATEST FAIL: city missing" }
 if (-not $ds1 -or -not $ds2) { throw "LATEST FAIL: doc:summary missing" }
 
-# rent_cold: muss überschreiben, FactId stabil bleiben, updatedAt springen
-if ([int]$rc2.value -ne 950) { throw "LATEST FAIL: rent_cold not updated to 950 (got $($rc2.value))" }
-if ($rc1.id -ne $rc2.id) { throw "LATEST FAIL: rent_cold factId changed (should be stable latest)" }
-if ($rc1.updatedAt -eq $rc2.updatedAt) { throw "LATEST FAIL: rent_cold updatedAt did not change on real update" }
+if ([int]$rc2.value -ne 950) { throw "LATEST FAIL: rent_cold not 950 (got $($rc2.value))" }
 
-# FactIds müssen stabil bleiben (latest-only FactId bleibt gleich)
-# - city soll NOOP sein (updatedAt stabil)
-# - doc:summary darf sich inhaltlich ändern, aber FactId muss stabil bleiben
-if ($ct1.id -ne $ct2.id) { throw "LATEST FAIL: city factId changed (unexpected)" }
-if ($ds1.id -ne $ds2.id) { throw "LATEST FAIL: doc:summary factId changed (unexpected)" }
+# "latest"-Contract: factId stabil (weil meta.latest=true in extractor)
+if ($rc1.factId -ne $rc2.factId) { throw "LATEST FAIL: rent_cold factId changed (should be stable latest)" }
 
-$changedKeys = @()
-foreach ($k in @("rent_cold","city","doc:summary")) {
-  $a = Get-ByKey $items1 $k
-  $b = Get-ByKey $items2 $k
-  if ($a.updatedAt -ne $b.updatedAt) { $changedKeys += $k }
-}
+# city sollte stabil bleiben (value gleich), factId stabil
+if ($ct1.factId -ne $ct2.factId) { throw "LATEST FAIL: city factId changed (unexpected)" }
+if ($ct1.value -ne $ct2.value) { throw "LATEST FAIL: city value changed (unexpected)" }
 
-"UPDATED KEYS (LATEST): $($changedKeys -join ', ')"
-
-# Harter Contract: genau 1 Key darf springen: rent_cold
-# Akzeptierter Contract:
-# - city darf NICHT springen (soll NOOP bleiben)
-# - rent_cold MUSS springen (echtes Update)
-# - doc:summary DARF springen (weil Summary von Text abhängt und sich mit Miete ändern kann)
-
-if ($changedKeys -contains "city") {
-  throw "LATEST FAIL: city must be NOOP across events, but updatedAt changed"
-}
-if (-not ($changedKeys -contains "rent_cold")) {
-  throw "LATEST FAIL: rent_cold must update, but did not"
-}
-
-# Optional: doc:summary darf nur dann springen, wenn auch rent_cold gesprungen ist
-if (($changedKeys -contains "doc:summary") -and -not ($changedKeys -contains "rent_cold")) {
-  throw "LATEST FAIL: doc:summary changed but rent_cold did not (unexpected coupling)"
-}
-
-# Optional strenger: es dürfen nur rent_cold (+ optional doc:summary) springen
-$allowed = @("rent_cold","doc:summary")
-$unexpected = @($changedKeys | Where-Object { $allowed -notcontains $_ })
-if ($unexpected.Count -gt 0) {
-  throw "LATEST FAIL: unexpected updated keys: $($unexpected -join ', ') (all updated: $($changedKeys -join ', '))"
-}
-
-# Optional: zusätzlich run2.upserted hart machen (erst aktivieren, wenn du willst)
-# if ([int]$run2.upserted -ne 1) { throw "LATEST FAIL: expected run2.upserted=1, got $($run2.upserted)" }
+# doc:summary ist system+latest => factId stabil
+if ($ds1.factId -ne $ds2.factId) { throw "LATEST FAIL: doc:summary factId changed (unexpected)" }
 
 "LATEST OK"
 

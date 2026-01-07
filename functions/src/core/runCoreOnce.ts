@@ -9,6 +9,7 @@
  * -> factsDiff (new/ignored) -> haltungDelta -> intervention
  */
 
+import { FROZEN } from "./CORE_FREEZE";
 import { dayBucketUTC, sha256 } from "./rawEvents/hash";
 import type { RawEventDoc } from "./rawEvents/types";
 
@@ -211,9 +212,7 @@ function canonicalizeFactForCompare(f: any) {
 }
 
 function stableEqual(a: any, b: any): boolean {
-  // du hast stableStringify schon im Projekt (wird in anderen Stellen genutzt)
-  // falls runCoreOnce.ts es noch nicht importiert, import ergänzen:
-  // import { stableStringify } from "./utils/stableStringify";
+  
   return stableStringify(a) === stableStringify(b);
 }
 
@@ -229,6 +228,15 @@ function toValidatedFactPure(f: FactInput, localeFallback: string) {
 
   // key normalization (system keys pass through in normalizeFactKey)
   const key = normalizeFactKey(String((f as any).key ?? ""), domain as any, meta);
+
+  // Phase 1.2 strict: reject "silent normalization" for non-system facts.
+// If normalizeFactKey changes the key, we treat it as invalid input.
+const rawKey = typeof (f as any).key === "string" ? String((f as any).key).trim() : "";
+const isSystem = !!(meta && (meta as any).system === true);
+
+if (!isSystem && rawKey && key !== rawKey) {
+  throw new Error(`fact_rejected_key_normalized:${rawKey}=>${key}`);
+}
 
   // value normalization
   const value = normalizeFactValueByLocale((f as any).value ?? null, locale);
@@ -306,10 +314,6 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
     : listExtractors();
 
   const prevFacts = Array.isArray(input?.state?.facts) ? input.state!.facts! : [];
-  const prevFactIdSet = new Set(
-    prevFacts.map((f) => String(f.factId ?? "").trim()).filter(Boolean)
-  );
-
   const hBefore = normalizeHaltungPure(input?.state?.haltung);
 
   // 1) Build in-memory RawEvent (deterministic)
@@ -377,18 +381,51 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
     }
   }
 
-  // 3) Validate + normalize + compute factIds (pure)
-  const validatedFacts: RunCoreOnceOutput["validatedFacts"] = [];
-  for (const f of extractedFacts) {
-    const v = validateFactInputV1Pure(f);
-    if (!v.ok) continue;
+  // 3) Validate + normalize + compute factIds (pure) + Phase 1.2 strict validation
+const validatedFacts: RunCoreOnceOutput["validatedFacts"] = [];
+for (const f of extractedFacts) {
+  const v = validateFactInputV1Pure(f);
+  if (!v.ok) continue;
 
-    const vf = toValidatedFactPure(f, locale);
-    // Hard guard: must have key + entityId + factId
-    if (!vf.key || !vf.entityId || !vf.factId) continue;
-
-    validatedFacts.push(vf);
+  let vf: any;
+  try {
+    vf = toValidatedFactPure(f, locale);
+  } catch (e) {
+    // Phase 1.2: reject instead of "correcting" (do NOT crash the run)
+    warnings.push(`fact_rejected_toValidatedFact_error:${String(e)}`);
+    continue;
   }
+
+  // Hard guard: must have key + entityId + factId
+  if (!vf.key || !vf.entityId || !vf.factId) {
+    warnings.push("fact_rejected_missing_core_fields");
+    continue;
+  }
+
+  // Phase 1.2: domain must be frozen-allowed
+  const domain = String(vf.domain ?? "").trim();
+  if (!domain || !(FROZEN.domains as readonly string[]).includes(domain)) {
+    warnings.push(`fact_rejected_domain_not_frozen:${domain || "EMPTY"}`);
+    continue;
+  }
+
+  // Phase 1.2: extractorId must be frozen-allowed (only enforce for raw_event sourced facts)
+  const source = String(vf.source ?? "").trim();
+  const extractorId = String(vf.meta?.extractorId ?? "").trim();
+
+  if (source === "raw_event") {
+    if (!extractorId) {
+      warnings.push("fact_rejected_missing_extractorId");
+      continue;
+    }
+    if (!(FROZEN.extractors as readonly string[]).includes(extractorId)) {
+      warnings.push(`fact_rejected_extractor_not_frozen:${extractorId}`);
+      continue;
+    }
+  }
+
+  validatedFacts.push(vf);
+}
 
   // 4) factsDiff (pure) — NEW vs UPDATED vs IGNORED
 const diffNew: string[] = [];

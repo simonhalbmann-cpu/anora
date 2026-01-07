@@ -36,40 +36,47 @@ export const realEstateV1Extractor: Extractor = {
     const cityHint = /berlin/i.test(normalizedText) ? "Berlin" : null;
 
 
-    // =========================================================
-    // (A) Document-Entity: Trace/Debug (System-Fact)
-    // =========================================================
-    const docEntityFingerprint = `rawEvent:${rawEventId}`;
+    // (A) System "latest per user": doc:summary muss STABIL bleiben (für Phase11 LATEST)
+// -> Entity darf NICHT rawEventId enthalten.
+// -> Wir binden an userRef (kommt aus RawEventDoc.userRef -> extractor input meta)
+const userRef =
+  String((input as any)?.meta?.userRef ?? "").trim();
 
-    const docSummaryFact: FactInput = {
-      // IDs optional – Store ergänzt sie
-      factId: "",
-      entityId: "",
+if (!userRef) {
+  // Fail fast: wenn userRef nicht da ist, kann doc:summary nicht "per user" stabil sein.
+  throw new Error("real_estate.v1: missing meta.userRef in extractor input");
+}
 
-      entityDomain: "real_estate",
-      entityType: "document",
-      entityFingerprint: docEntityFingerprint,
+const docEntityFingerprint = `user:${userRef}::doc_summary`;
 
-      key: "doc:summary",
-      domain: "real_estate",
+const docSummaryFact: FactInput = {
+  factId: "",
+  entityId: "",
 
-      value: {
-        hasColdRent,
-        coldRent,
-        cityHint,
-      },
+  entityDomain: "real_estate",
+  entityType: "document",
+  entityFingerprint: docEntityFingerprint,
 
-      source: "raw_event",
-      sourceRef: rawEventId,
+  key: "doc:summary",
+  domain: "real_estate",
 
-      meta: {
-  system: true, // ✅ verhindert Normalisierung -> "doc:summary" bleibt exakt so
-  latest: true, // ✅ überschreibt pro Dokument-Entity statt zu duplizieren
-  locale,
-  extractorId: "real_estate.v1",
-  rawEventId,
-},
-    };
+  value: {
+    hasColdRent,
+    coldRent,
+    cityHint,
+  },
+
+  source: "raw_event",
+  sourceRef: rawEventId,
+
+  meta: {
+    system: true,
+    latest: true,
+    locale,
+    extractorId: "real_estate.v1",
+    rawEventId,
+  },
+};
 
     // =========================================================
     // (B) Property-Entity: echtes Wissen (nicht system)
