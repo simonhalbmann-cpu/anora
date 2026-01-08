@@ -1,4 +1,4 @@
-﻿/**
+/**
  * PHASE 4.1: Interventions-Controller – harte Stufen (Core-intern, deterministisch)
  * - Keine Texte, kein Prompting, keine UI
  * - Nur technische Entscheidung: observe|hint|recommend|contradict

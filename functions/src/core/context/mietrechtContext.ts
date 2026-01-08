@@ -2,7 +2,6 @@
 
 import admin from "firebase-admin";
 import { logger } from "firebase-functions/v2";
-import type { BrainFactInput } from "../persistence/saveNewFacts";
 
 // Wichtig: db exakt so erstellen wie im God-File
 const db = admin.firestore();
@@ -34,7 +33,7 @@ export async function setMietrechtContextForUser(
 
 export async function updateMietrechtContextFromFacts(
   userId: string,
-  facts: BrainFactInput[],
+  facts: { type?: string; data?: any }[],
   options?: { filename?: string | null; source?: string | null }
 ): Promise<void> {
   if (!facts || facts.length === 0) {

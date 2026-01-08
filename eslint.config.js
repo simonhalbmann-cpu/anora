@@ -5,9 +5,20 @@ const expoConfig = require("eslint-config-expo/flat");
 module.exports = defineConfig([
   expoConfig,
 
-  // global ignores
+  // global ignores (final)
   {
-    ignores: ["dist/*"],
+    ignores: [
+      "**/node_modules/**",
+      "**/lib/**", // functions build output (tsc -> lib)
+      "**/dist/**",
+      "**/build/**",
+      "**/.expo/**",
+      "**/.turbo/**",
+      "**/.firebase/**",
+      "**/.cache/**",
+      "**/coverage/**",
+      "**/*.min.js",
+    ],
   },
 
   // ✅ Cloud Functions: forbid impure bridge imports everywhere in functions/src ...
@@ -18,30 +29,54 @@ module.exports = defineConfig([
         "error",
         {
           paths: [
+            // ---- disallow importing impure bridge from anywhere except allowed entrypoints ----
             {
               name: "./core/bridge",
               message:
-                "IMPURE import: only functions/src/index.ts may import ./core/bridge. Everyone else must use ./core/bridgePure.",
+                "IMPURE import: only entrypoints may import bridge. Use bridgePure elsewhere.",
             },
             {
               name: "./core/bridge.ts",
               message:
-                "IMPURE import: only functions/src/index.ts may import ./core/bridge.ts. Everyone else must use ./core/bridgePure.",
+                "IMPURE import: only entrypoints may import bridge. Use bridgePure elsewhere.",
             },
+
             {
               name: "../core/bridge",
               message:
-                "IMPURE import: do not import ../core/bridge here. Use ../core/bridgePure.",
+                "IMPURE import: only entrypoints may import bridge. Use bridgePure elsewhere.",
             },
             {
               name: "../core/bridge.ts",
               message:
-                "IMPURE import: do not import ../core/bridge.ts here. Use ../core/bridgePure.",
+                "IMPURE import: only entrypoints may import bridge. Use bridgePure elsewhere.",
+            },
+
+            {
+              name: "../../core/bridge",
+              message:
+                "IMPURE import: only entrypoints may import bridge. Use bridgePure elsewhere.",
             },
             {
-              name: "./bridge",
+              name: "../../core/bridge.ts",
               message:
-                "IMPURE import: do not import ./bridge here. Use ./bridgePure.",
+                "IMPURE import: only entrypoints may import bridge. Use bridgePure elsewhere.",
+            },
+
+            {
+              name: "../../../core/bridge",
+              message:
+                "IMPURE import: only entrypoints may import bridge. Use bridgePure elsewhere.",
+            },
+            {
+              name: "../../../core/bridge.ts",
+              message:
+                "IMPURE import: only entrypoints may import bridge. Use bridgePure elsewhere.",
+            },
+
+            {
+              name: "./bridge",
+              message: "IMPURE import: do not import ./bridge here. Use ./bridgePure.",
             },
             {
               name: "./bridge.ts",
@@ -58,11 +93,13 @@ module.exports = defineConfig([
     },
   },
 
-  // ✅ ...except index.ts (Cloud Function entry is allowed to be impure)
-  {
-    files: ["functions/src/index.{ts,tsx,js,jsx}"],
-    rules: {
-      "no-restricted-imports": "off",
-    },
+  // ✅ ...except ONLY index.ts (index.ts is the ONLY impure surface)
+{
+  files: [
+    "functions/src/index.{ts,tsx,js,jsx}",
+  ],
+  rules: {
+    "no-restricted-imports": "off",
   },
+},
 ]);

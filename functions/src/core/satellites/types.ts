@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Satellite Types (Phase 5.x)
  * Ziel: index.ts entlasten und Typen wiederverwendbar machen.
  */
@@ -20,7 +20,7 @@ export type BrainFactType =
 // Chat
 // ------------------------------
 export type BrainChatMessage = {
-  role: "user" | "assistant" | "anora";
+  role: "user" | "assistant";
   text: string;
 };
 
@@ -77,7 +77,7 @@ export type BrainInput = {
   message: string;
   history: BrainChatMessage[];
   knowledge: BrainFactDoc[];
-  contexts?: BrainContexts;      // <- WICHTIG: darf undefined sein
+  contexts: BrainContexts | null;
 };
 
 export type BrainOutput = {

@@ -1,5 +1,4 @@
 // app/home.tsx
-
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { onAuthStateChanged } from "firebase/auth";
@@ -19,6 +18,7 @@ import {
   View,
 } from "react-native";
 import HeaderMenu from "../src/components/HeaderMenu";
+import NeuralBackground from "../src/components/NeuralBackground";
 import { auth } from "../src/services/firebase";
 
 // ------------------------------------------------------------------
@@ -427,8 +427,11 @@ console.log("handleSend payload:", {
   }
 
   return (
+  <View style={styles.container}>
+    <NeuralBackground />
+
     <KeyboardAvoidingView
-      style={styles.container}
+      style={StyleSheet.absoluteFill}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 20}
     >
@@ -456,9 +459,9 @@ console.log("handleSend payload:", {
           <View style={styles.presenceCard}>
             <Text style={styles.presenceTitle}>ANORA PRESENCE</Text>
 
-        {/* Kleine Erklärung direkt auf der Karte*/}
-            <Text style={styles.presenceSubtitle}>Hinweis zu offenen Themen - 
-              keine Autohandlung, kein Smalltalk.
+            {/* Kleine Erklärung direkt auf der Karte*/}
+            <Text style={styles.presenceSubtitle}>
+              Hinweis zu offenen Themen - keine Autohandlung, kein Smalltalk.
             </Text>
 
             <Text style={styles.presenceMessage}>{presenceEvent.message}</Text>
@@ -468,27 +471,21 @@ console.log("handleSend payload:", {
                 style={[styles.presenceButton, styles.presenceButtonPrimary]}
                 onPress={() => handlePresenceAction("view_now")}
               >
-                <Text style={styles.presenceButtonPrimaryText}>
-                  Jetzt ansehen
-                </Text>
+                <Text style={styles.presenceButtonPrimaryText}>Jetzt ansehen</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={[styles.presenceButton, styles.presenceButtonSecondary]}
                 onPress={() => handlePresenceAction("snooze")}
               >
-                <Text style={styles.presenceButtonSecondaryText}>
-                  Später
-                </Text>
+                <Text style={styles.presenceButtonSecondaryText}>Später</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={[styles.presenceButton, styles.presenceButtonSecondary]}
                 onPress={() => handlePresenceAction("disable")}
               >
-                <Text style={styles.presenceButtonSecondaryText}>
-                  Thema ausblenden
-                </Text>
+                <Text style={styles.presenceButtonSecondaryText}>Thema ausblenden</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -545,22 +542,16 @@ console.log("handleSend payload:", {
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[
-            styles.iconButton,
-            (!input.trim() || sending) && { opacity: 0.3 },
-          ]}
+          style={[styles.iconButton, (!input.trim() || sending) && { opacity: 0.3 }]}
           onPress={handleSend}
           disabled={!input.trim() || sending}
         >
-          {sending ? (
-            <ActivityIndicator size="small" />
-          ) : (
-            <Send size={24} color="#0f9f9c" />
-          )}
+          {sending ? <ActivityIndicator size="small" /> : <Send size={24} color="#0f9f9c" />}
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
-  );
+  </View>
+);
 }
 
 const styles = StyleSheet.create({

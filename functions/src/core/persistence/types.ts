@@ -21,9 +21,9 @@ export type CoreWritePlanV1 = {
   };
 
   haltung: {
-    mode: "none" | "patch";
-    keys: string[];
-  };
+  mode: "none" | "set_state";
+  keys: string[]; // optional: welche Felder sich geändert haben
+};
 };
 
 export type PersistenceStatusV1 =

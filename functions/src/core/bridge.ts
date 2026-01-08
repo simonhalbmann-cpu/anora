@@ -17,16 +17,23 @@ import {
   safeParseAssistantJson,
   saveNewFacts,
   updateMietrechtContextFromFacts,
-} from "./legacyExports";
+} from "./bridgeExports";
 
-const apiKey = process.env.OPENAI_API_KEY;
-if (!apiKey) {
-  throw new Error(
-    "OPENAI_API_KEY ist NICHT gesetzt. Bitte .env im functions-Ordner prüfen."
-  );
+let _openai: OpenAI | null = null;
+
+export function getOpenAI(): OpenAI {
+  if (_openai) return _openai;
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "OPENAI_API_KEY ist NICHT gesetzt. Bitte .env im functions-Ordner prüfen."
+    );
+  }
+
+  _openai = new OpenAI({ apiKey });
+  return _openai;
 }
-
-export const openai = new OpenAI({ apiKey });
 
 export {
   INGEST_SYSTEM_PROMPT_DE,

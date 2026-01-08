@@ -18,13 +18,13 @@ async function main() {
   const t1 = baseText + " Kaltmiete 1200 Euro.";
   const t2 = baseText + " Kaltmiete 900 Euro.";
 
-  // Evidence ref (wir wissen noch nicht sicher wo du es final speicherst)
-// -> wir prüfen BEIDE möglichen Pfade
-const evidenceColCore = (uid: string) =>
-  db.collection("core").doc(uid).collection("evidence");
+  // ✅ Option A: Evidence gehört zum Core => core/{uid}/evidence_v1
+  const evidenceColCore = (uid: string) =>
+    db.collection("core").doc(uid).collection("evidence_v1");
 
-const evidenceColBrain = (uid: string) =>
-  db.collection("brain").doc(uid).collection("evidence_v1");
+  // ❌ Brain darf hier NICHT mehr benutzt werden (wir checken, dass es leer ist)
+  const evidenceColBrain = (uid: string) =>
+    db.collection("brain").doc(uid).collection("evidence_v1");
 
   // --- RUN 1 ---
   const out1 = await runCoreWithPersistence({
@@ -46,32 +46,48 @@ const evidenceColBrain = (uid: string) =>
 
   // Evidence docs nach factId holen (Run1 sollte 1 Evidence für rent_cold erzeugen)
   const evSnap1_core = await evidenceColCore(userId)
-  .where("factId", "==", String(rent1.factId))
-  .get();
+    .where("factId", "==", String(rent1.factId))
+    .get();
 
-const evSnap1_brain = await evidenceColBrain(userId)
-  .where("factId", "==", String(rent1.factId))
-  .get();
+  const evSnap1_brain = await evidenceColBrain(userId)
+    .where("factId", "==", String(rent1.factId))
+    .get();
 
-console.log("DEBUG evidence location (run1)", {
-  core: evSnap1_core.size,
-  brain: evSnap1_brain.size,
-});
+  console.log("DEBUG evidence location (run1)", {
+    core: evSnap1_core.size,
+    brain: evSnap1_brain.size,
+  });
 
-// wir erwarten: genau an EINEM Ort muss es auftauchen
-const evSnap1 =
-  evSnap1_core.size > 0 ? evSnap1_core :
-  evSnap1_brain.size > 0 ? evSnap1_brain :
-  null;
+  // ✅ Option A: brain MUSS 0 sein
+  assert.equal(
+    evSnap1_brain.size,
+    0,
+    "expected NO evidence in brain/evidence_v1 (Option A)"
+  );
 
-assert.ok(evSnap1, "expected evidence in either core/evidence or brain/evidence_v1");
-assert.equal(evSnap1.size, 1, `expected 1 evidence doc after run1, got core=${evSnap1_core.size} brain=${evSnap1_brain.size}`);
+  // ✅ Option A: core MUSS 1 sein
+  assert.equal(
+    evSnap1_core.size,
+    1,
+    `expected 1 evidence doc in core/evidence_v1 after run1, got ${evSnap1_core.size}`
+  );
 
-  const ev1 = evSnap1.docs[0].data() as any;
+  const ev1 = evSnap1_core.docs[0].data() as any;
+
   assert.ok(ev1.evidenceId, "missing evidenceId in ev1");
-  assert.equal(ev1.sourceRef, out1.rawEvent.rawEventId, "expected ev1.sourceRef == run1 rawEventId");
-  assert.ok(ev1.supersededBy === null || typeof ev1.supersededBy === "undefined", "expected ev1.supersededBy null/undefined");
-  assert.ok(ev1.supersededAt === null || typeof ev1.supersededAt === "undefined", "expected ev1.supersededAt null/undefined");
+  assert.equal(
+    ev1.sourceRef,
+    out1.rawEvent.rawEventId,
+    "expected ev1.sourceRef == run1 rawEventId"
+  );
+  assert.ok(
+    ev1.supersededBy === null || typeof ev1.supersededBy === "undefined",
+    "expected ev1.supersededBy null/undefined"
+  );
+  assert.ok(
+    ev1.supersededAt === null || typeof ev1.supersededAt === "undefined",
+    "expected ev1.supersededAt null/undefined"
+  );
 
   // --- RUN 2 (Update) ---
   const out2 = await runCoreWithPersistence({
@@ -91,35 +107,42 @@ assert.equal(evSnap1.size, 1, `expected 1 evidence doc after run1, got core=${ev
   assert.ok(rent2?.factId, "missing rent_cold factId in out2.validatedFacts");
 
   // Bei latest muss factId gleich bleiben
-  assert.equal(String(rent2.factId), String(rent1.factId), "expected same factId for latest rent_cold");
+  assert.equal(
+    String(rent2.factId),
+    String(rent1.factId),
+    "expected same factId for latest rent_cold"
+  );
 
   // Jetzt müssen 2 evidence docs existieren (run1 + run2)
   const evSnap2_core = await evidenceColCore(userId)
-  .where("factId", "==", String(rent2.factId))
-  .get();
+    .where("factId", "==", String(rent2.factId))
+    .get();
 
-const evSnap2_brain = await evidenceColBrain(userId)
-  .where("factId", "==", String(rent2.factId))
-  .get();
+  const evSnap2_brain = await evidenceColBrain(userId)
+    .where("factId", "==", String(rent2.factId))
+    .get();
 
-console.log("DEBUG evidence location (run2)", {
-  core: evSnap2_core.size,
-  brain: evSnap2_brain.size,
-});
+  console.log("DEBUG evidence location (run2)", {
+    core: evSnap2_core.size,
+    brain: evSnap2_brain.size,
+  });
 
-const evSnap2 =
-  evSnap2_core.size > 0 ? evSnap2_core :
-  evSnap2_brain.size > 0 ? evSnap2_brain :
-  null;
+  assert.equal(
+    evSnap2_brain.size,
+    0,
+    "expected NO evidence in brain/evidence_v1 (Option A)"
+  );
+  assert.equal(
+    evSnap2_core.size,
+    2,
+    `expected 2 evidence docs in core/evidence_v1 after run2, got ${evSnap2_core.size}`
+  );
 
-assert.ok(evSnap2, "expected evidence in either core/evidence or brain/evidence_v1 (run2)");
-
-  assert.equal(evSnap2.size, 2, `expected 2 evidence docs after run2, got ${evSnap2.size}`);
+  const evDocs = evSnap2_core.docs.map((doc: any) => doc.data() as any);
 
   // Wir identifizieren alt vs neu via sourceRef/rawEventId
-  const evDocs = evSnap2.docs.map((doc: any) => doc.data() as any);
-const evOld = evDocs.find((x: any) => x.sourceRef === out1.rawEvent.rawEventId);
-const evNew = evDocs.find((x: any) => x.sourceRef === out2.rawEvent.rawEventId);
+  const evOld = evDocs.find((x: any) => x.sourceRef === out1.rawEvent.rawEventId);
+  const evNew = evDocs.find((x: any) => x.sourceRef === out2.rawEvent.rawEventId);
 
   assert.ok(evOld, "expected old evidence (sourceRef=run1 rawEventId)");
   assert.ok(evNew, "expected new evidence (sourceRef=run2 rawEventId)");
@@ -133,8 +156,14 @@ const evNew = evDocs.find((x: any) => x.sourceRef === out2.rawEvent.rawEventId);
   assert.ok(typeof evOld.supersededAt === "number", "expected evOld.supersededAt number");
 
   // New darf NICHT superseded sein
-  assert.ok(evNew.supersededBy === null || typeof evNew.supersededBy === "undefined", "expected evNew.supersededBy null/undefined");
-  assert.ok(evNew.supersededAt === null || typeof evNew.supersededAt === "undefined", "expected evNew.supersededAt null/undefined");
+  assert.ok(
+    evNew.supersededBy === null || typeof evNew.supersededBy === "undefined",
+    "expected evNew.supersededBy null/undefined"
+  );
+  assert.ok(
+    evNew.supersededAt === null || typeof evNew.supersededAt === "undefined",
+    "expected evNew.supersededAt null/undefined"
+  );
 
   console.log("✅ A4.5 SUPERSEDES TEST PASSED", {
     factId: String(rent2.factId).slice(0, 8),

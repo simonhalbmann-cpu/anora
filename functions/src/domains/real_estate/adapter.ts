@@ -14,30 +14,6 @@ export type BrainFactDoc = {
   userId: string;
 };
 
-function distinctValues(values: any[]): any[] {
-  const seen = new Set<string>();
-  const out: any[] = [];
-  for (const v of values) {
-    const k = JSON.stringify(v ?? null);
-    if (!seen.has(k)) {
-      seen.add(k);
-      out.push(v);
-    }
-  }
-  return out;
-}
-
-function pickLatest(facts: FactDoc[], key: string): FactDoc | null {
-  const list = facts
-    .filter((x) => x?.key === key)
-    .sort(
-      (a, b) =>
-        Number(b?.updatedAt ?? b?.createdAt ?? 0) -
-        Number(a?.updatedAt ?? a?.createdAt ?? 0)
-    );
-  return list[0] ?? null;
-}
-
 export function mapRealEstateFactsToLegacyKnowledge(opts: {
   userId: string;
   facts: FactDoc[];

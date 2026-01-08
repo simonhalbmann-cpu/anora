@@ -1,10 +1,19 @@
 // functions/src/core/persistence/firestoreExecutorV1.ts
 import admin from "firebase-admin";
 
-const db = admin.firestore();
+// WICHTIG: kein admin.firestore() auf Top-Level!
+// Sonst crasht/hängt es beim Import, bevor index.ts initializeApp() ausführt.
+
+function getDb() {
+  // defensiv: falls jemand diese Datei jemals ohne index.ts benutzt
+  if (!admin.apps.length) {
+    admin.initializeApp();
+  }
+  return admin.firestore();
+}
 
 export function coreUserRoot(userId: string) {
-  return db.collection("core").doc(userId);
+  return getDb().collection("core").doc(userId);
 }
 
 export function rawEventRef(userId: string, rawEventId: string) {
@@ -20,28 +29,13 @@ export function haltungRef(userId: string) {
 }
 
 export function factHistoryRef(userId: string, historyId: string) {
-  return admin
-    .firestore()
-    .collection("brain")
-    .doc(userId)
-    .collection("fact_history_v1")
-    .doc(historyId);
+  return coreUserRoot(userId).collection("fact_history_v1").doc(historyId);
 }
 
 export function evidenceRef(userId: string, evidenceId: string) {
-  return admin
-    .firestore()
-    .collection("brain")
-    .doc(userId)
-    .collection("evidence_v1")
-    .doc(evidenceId);
+  return coreUserRoot(userId).collection("evidence_v1").doc(evidenceId);
 }
 
 export function supersedesRef(userId: string, factId: string) {
-  return admin
-    .firestore()
-    .collection("brain")
-    .doc(userId)
-    .collection("supersedes_v1")
-    .doc(factId);
+  return coreUserRoot(userId).collection("supersedes_v1").doc(factId);
 }

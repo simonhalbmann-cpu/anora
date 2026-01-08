@@ -5,6 +5,13 @@ import admin from "firebase-admin";
 import type { RunCoreOnceOutput } from "../runCoreOnce";
 import { sha256Hex } from "../utils/hash";
 import { stableStringify } from "../utils/stableStringify";
+import {
+  evidenceRef,
+  factHistoryRef,
+  factRef,
+  haltungRef,
+  rawEventRef,
+} from "./firestoreExecutorV1";
 import type { CoreWritePlanV1, PersistenceResultV1 } from "./types";
 
 export let __EXECUTOR_CALLS__ = 0;
@@ -33,8 +40,14 @@ function buildEvidenceId(params: { factId: string; sourceRef: string }) {
   return sha256Hex(`evidence::${params.factId}::${params.sourceRef}`);
 }
 
-function buildHistoryId(params: { factId: string; sourceRef: string; kind: "created" | "updated" }) {
-  return sha256Hex(`history::${params.factId}::${params.sourceRef}::${params.kind}`);
+function buildHistoryId(params: {
+  factId: string;
+  sourceRef: string;
+  kind: "created" | "updated" | "superseded";
+}) {
+  return sha256Hex(
+    `history::${params.factId}::${params.sourceRef}::${params.kind}`
+  );
 }
 
 // NOTE: This file is intentionally impure. It may import Firestore/admin later.
@@ -60,7 +73,7 @@ export async function executeWritePlanV1(
 
   const wantsRawEvent = plan.rawEvent === "append";
   const wantsFacts = plan.facts.mode === "upsert" && (plan.facts.count ?? 0) > 0;
-  const wantsHaltung = plan.haltung.mode === "patch" && (plan.haltung.keys?.length ?? 0) > 0;
+  const wantsHaltung = plan.haltung.mode === "set_state" && (plan.haltung.keys?.length ?? 0) > 0;
 
   // Minimal noop fast-path
   if (!wantsRawEvent && !wantsFacts && !wantsHaltung) {
@@ -78,10 +91,6 @@ export async function executeWritePlanV1(
   }
 
   try {
-
-// CJS-safe lazy load (ts-node + tsc output)
-const { rawEventRef, factRef, haltungRef, factHistoryRef, evidenceRef } =
-  require("./firestoreExecutorV1");
 
   // We write exactly what the plan allows. Nothing else.
   const db = admin.firestore();
@@ -211,10 +220,49 @@ batch.set(
 
 evidenceAppended += 1;
 
-const kind: "created" | "updated" = prev ? "updated" : "created";
+const isUpdate = !!prev;
+
+// 1) Wenn Update: schreibe ein "superseded"-History-Event für den alten Stand
+if (isUpdate) {
+  const prevSourceRef = String((prev as any)?.sourceRef ?? "").trim();
+
+  // prevSourceRef sollte da sein (bei dir ist sourceRef normalerweise rawEventId),
+  // aber wir sind defensiv und schreiben superseded nur wenn vorhanden.
+  if (prevSourceRef) {
+    const supersededHistoryId = buildHistoryId({
+      factId,
+      sourceRef: prevSourceRef,
+      kind: "superseded",
+    });
+
+    batch.set(
+      factHistoryRef(userId, supersededHistoryId),
+      {
+        historyId: supersededHistoryId,
+        factId,
+        entityId: nextDoc.entityId,
+        domain: nextDoc.domain,
+        key: nextDoc.key,
+        kind: "superseded",
+        prev: canonicalizeFactDocForNoop(prev),
+        next: null,
+        sourceRef: prevSourceRef,
+        supersededBySourceRef: nextDoc.sourceRef,
+        createdAt: now,
+      },
+      { merge: false }
+    );
+
+    historyAppended += 1;
+  }
+}
+
+// 2) Immer: "created" oder "updated"-History-Event für den neuen Stand
+const kind: "created" | "updated" = isUpdate ? "updated" : "created";
+
 const historyId = buildHistoryId({
   factId,
-  sourceRef: nextDoc.sourceRef,
+  sourceRef: String(nextDoc.sourceRef),
   kind,
 });
 
@@ -227,7 +275,7 @@ batch.set(
     domain: nextDoc.domain,
     key: nextDoc.key,
     kind,
-    prev: prev ? canonicalizeFactDocForNoop(prev) : null,
+    prev: isUpdate ? canonicalizeFactDocForNoop(prev) : null,
     next: canonicalizeFactDocForNoop(nextDoc),
     sourceRef: nextDoc.sourceRef,
     createdAt: now,
@@ -243,17 +291,21 @@ historyAppended += 1;
 }
 
   if (wantsHaltung) {
-    batch.set(
-      haltungRef(userId),
-      {
-        version: 1,
-        patch: input.out.haltungDelta.patch,
-        updatedAt: Date.now(),
-      },
-      { merge: true }
-    );
-    haltungPatched = 1;
-  }
+  const now = Date.now();
+
+  // Wir schreiben den *vollen* Zustand (State), nicht nur den Patch.
+  // Der State kommt aus dem Pure Core (`haltungDelta.after`), basierend auf `state.haltung`.
+  batch.set(
+    haltungRef(userId),
+    {
+      ...input.out.haltungDelta.after,
+      updatedAt: now, // Storage-Timestamp darf impure sein
+    },
+    { merge: false } // State-Doc ist "single source of truth"
+  );
+
+  haltungPatched = 1;
+}
 
 const totalWrites =
   rawEventsAppended +

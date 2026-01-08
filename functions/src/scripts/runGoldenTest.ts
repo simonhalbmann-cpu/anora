@@ -41,6 +41,9 @@ async function main() {
   const text = fs.readFileSync(filePath, "utf8");
   assert(text.length > 10, "Golden text seems empty");
 
+  const expectedColdRent = parseExpectedColdRentFromText(text);
+  assert(expectedColdRent !== null, "could not parse expected cold rent from golden text");
+
   function parseExpectedColdRentFromText(t: string): number | null {
   const s = String(t || "");
 
@@ -324,6 +327,11 @@ assert(rentValues.length >= 1, "rent_cold value is not numeric");
 
 // Erwartung: rent_cold muss > 0 sein (keine harte Zahl mehr)
 assert(rentValues.some((n) => n > 0), `rent_cold invalid: ${rentValues.join(",")}`);
+
+assert(
+  rentValues.some((n) => Math.abs(n - (expectedColdRent as number)) < 0.01),
+  `rent_cold does not match expected (${expectedColdRent}); got: ${rentValues.join(",")}`
+);
 
 // 6b) Legacy facts must NOT be written anymore
 const legacySnap = await db

@@ -1,17 +1,20 @@
+// ❌ LEGACY – NOT USED IN PHASE 2
+// This runner performs entity resolution & persistence.
+// Phase 2 Core must NOT depend on this.
 // functions/src/core/runner/runAllExtractorsOnRawEventV1.ts
 import * as logger from "firebase-functions/logger";
-import { getOrCreateEntityIdByFingerprint } from "../entities/store";
-import { getExtractor, listExtractors } from "../facts/registry";
-import { upsertManyFacts } from "../facts/store";
-import type { FactInput } from "../facts/types";
+import type { EntityResolverV1 } from "../../core/entities/resolver";
+import { getExtractor, listExtractors } from "../../core/facts/registry";
+import { upsertManyFacts } from "../../core/facts/store";
+import type { FactInput } from "../../core/facts/types";
 import {
   markRawEventRunDone,
   markRawEventRunError,
   markRawEventRunStart,
   patchRawEventProcessing,
-} from "../rawEvents/store";
-import type { RawEventDoc } from "../rawEvents/types";
-import { toExtractorInputV1 } from "./extractorInput";
+} from "../../core/rawEvents/store";
+import type { RawEventDoc } from "../../core/rawEvents/types";
+import { toExtractorInputV1 } from "../../core/runner/extractorInput";
 
 const now = () => Date.now();
 
@@ -65,13 +68,17 @@ async function safePatchProcessing(
 }
 
 
-export async function runAllExtractorsOnRawEventV1Core(opts: {
-  userId: string;
-  rawEventId: string;
-  raw: RawEventDoc;
-  // optional: nur bestimmte Extractors laufen lassen
-  extractorIds?: string[];
-}) {
+export async function runAllExtractorsOnRawEventV1Core(
+  opts: {
+    userId: string;
+    rawEventId: string;
+    raw: RawEventDoc;
+    // optional: nur bestimmte Extractors laufen lassen
+    extractorIds?: string[];
+  },
+  deps?: { entityResolver?: EntityResolverV1 }
+) {
+  
   const { userId, rawEventId, raw } = opts;
   // PHASE 2: [] bedeutet "Satelliten AUS" und muss respektiert werden.
 // undefined bedeutet "default = alle".
@@ -211,29 +218,63 @@ logger.info("runner_all_extractors_v1_resolve_start", {
 });
 
   const resolvedFacts: FactInput[] = [];
+  let droppedMissingEntity = 0;
+  let resolvedByResolver = 0;
 
   for (const f of allFacts as any[]) {
+    // a) entityId schon da
     if (typeof f.entityId === "string" && f.entityId.trim()) {
       resolvedFacts.push(f);
       continue;
     }
 
+    // b) Resolver-Infos da?
     const hasResolver =
-      typeof f.entityFingerprint === "string" && f.entityFingerprint.trim() &&
-      typeof f.entityDomain === "string" && f.entityDomain.trim();
+      typeof f.entityFingerprint === "string" &&
+      f.entityFingerprint.trim() &&
+      typeof f.entityDomain === "string" &&
+      f.entityDomain.trim();
 
     if (hasResolver) {
-      const r = await getOrCreateEntityIdByFingerprint({
-        userId,
-        domain: f.entityDomain,
-        type: f.entityType ?? "generic",
-        fingerprint: f.entityFingerprint,
-      });
-      resolvedFacts.push({ ...f, entityId: r.entityId });
+      const resolver = deps?.entityResolver?.getOrCreateEntityIdByFingerprint;
+
+      // Phase 2: kein Resolver injected => NICHT persistieren können
+      if (!resolver) {
+        droppedMissingEntity++;
+        continue;
+      }
+
+      const entityDomain = String((f as any).entityDomain ?? "").trim();
+      const fingerprintRaw = String((f as any).entityFingerprint ?? "").trim();
+
+      if (!entityDomain || !fingerprintRaw) {
+        droppedMissingEntity++;
+        continue;
+      }
+
+      try {
+        const r = await resolver({ userId, entityDomain, fingerprintRaw });
+        if (r?.entityId) {
+          resolvedFacts.push({ ...f, entityId: r.entityId });
+          resolvedByResolver++;
+        } else {
+          droppedMissingEntity++;
+        }
+      } catch (e) {
+        // Resolver-Ausfall darf Runner nicht killen, aber Fact fliegt raus
+        logger.warn("runner_entity_resolve_failed", {
+          userId,
+          rawEventId,
+          error: String(e),
+        });
+        droppedMissingEntity++;
+      }
+
       continue;
     }
 
-    resolvedFacts.push(f);
+    // c) Kein entityId und keine Resolver-Infos => drop
+    droppedMissingEntity++;
   }
 
   logger.info("runner_all_extractors_v1_resolve_done", {
@@ -247,6 +288,8 @@ await safePatchProcessing(userId, rawEventId, {
   v1: {
     stage: "after_resolve",
     resolvedFacts: resolvedFacts.length,
+    droppedMissingEntity,
+    resolvedByResolver,
     tookMs: Date.now() - tAll,
   },
 });
@@ -257,6 +300,8 @@ logger.info("runner_all_extractors_v1_upsert_start", {
   userId,
   rawEventId,
   factsToUpsert: resolvedFacts.length,
+  droppedMissingEntity,
+  resolvedByResolver,
 });
 
 const write = await upsertManyFacts(userId, resolvedFacts);

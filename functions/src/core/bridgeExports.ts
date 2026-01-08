@@ -1,6 +1,5 @@
-// functions/src/core/legacyExports.ts
-// Übergangsmodul: Dinge, die bisher im God-File leben.
-// Ziel: Bridge darf NIEMALS ../index importieren (Zirkular-Import).
+// functions/src/core/bridgeExports.ts
+// Bridge-sichere Sammel-Exports (impure-kompatibel), um Zirkular-Imports zu vermeiden.
 
 export { safeParseAssistantJson } from "./parsing/safeParseAssistantJson";
 
@@ -12,3 +11,4 @@ export {
   updateMietrechtContextFromFacts
 } from "./context/mietrechtContext";
 export type { MietrechtContext } from "./context/mietrechtContext";
+

@@ -1,19 +1,33 @@
-﻿/**
- * PHASE 5.2: Satellite (LLM Brain) – baut Prompt + ruft Modell.
- * Core bleibt sauber: bekommt nur intervention-output, nicht rohe Haltung.
+// functions/src/core/satellites/llmBrain.ts
+
+// ❌ NOT CORE
+// Satellites may read facts but must never:
+// - rank
+// - prioritize
+// - aggregate
+// - store
+/**
+ * PHASE 5.x FINAL: Satellite (LLM Brain) – baut Prompt + ruft Modell.
+ * FINAL RULE: Reply-only. newFacts ist IMMER [].
  */
 
 import * as logger from "firebase-functions/logger";
-
-// ⚠️ Passe den Import an, falls BrainInput/BrainOutput nicht aus ../../index kommen.
+import type { CoreInterventionV1 } from "../interventions/types";
+import {
+  assertSatelliteReplyMatchesInterventionV1,
+  buildInterventionDirectiveV1,
+} from "./interventionContract";
 import type { BrainInput, BrainOutput } from "./types";
 
 export type LlmBrainDeps = {
   openai: any;
   model: string;
+
+  // System Prompt für Satellite (BRAIN_*)
   systemPrompt: string;
   systemPromptVersion?: string;
 
+  // Prompt-Limits
   maxFactsPerPrompt: number;
   maxKnowledgeSummaryLength: number;
   maxHistoryTurns: number;
@@ -22,15 +36,7 @@ export type LlmBrainDeps = {
 
   safeParseAssistantJson: (raw: string) => any;
 
-  validateIngestFacts: (
-    userId: string,
-    parsed: any,
-    safeMeta: { filename?: string | null; source?: string | null },
-    opts?: { maxFacts?: number }
-  ) => any[];
-
   fallbackCopy: {
-    missingApiKey: string;
     invalidJson: string;
     genericError: string;
   };
@@ -39,23 +45,14 @@ export type LlmBrainDeps = {
 export async function runLlmBrainSatellite(
   deps: LlmBrainDeps,
   input: BrainInput,
-  core?: { intervention?: { level: string; reasonCodes: string[] } }
+  core?: { intervention?: CoreInterventionV1 }
 ): Promise<BrainOutput> {
   const { userId, userName, message, knowledge, history, contexts } = input;
 
-  // ------------------------------------------------------------
-  // History-Normalisierung:
-  // - akzeptiert "user" | "anora" | "assistant"
-  // - für Prompt-Text labeln wir "anora"/"assistant" als "Anora"
-  // - für OpenAI-Messages (falls später genutzt) mappen wir "anora" -> "assistant"
-  // ------------------------------------------------------------
   const normalizedHistory = Array.isArray(history) ? history : [];
 
   const roleLabelForPrompt = (role: string) =>
     role === "user" ? "Nutzer" : "Anora";
-
-  const roleForOpenAi = (role: string) =>
-    role === "anora" ? "assistant" : role; // nur für später relevant
 
   const namePart = userName ? `Der Nutzer heißt ${userName}.` : "";
 
@@ -95,6 +92,9 @@ export async function runLlmBrainSatellite(
 
   const truncatedMessage =
     typeof message === "string" ? message.slice(0, deps.maxUserMessageLength) : "";
+
+  const interventionLevel = core?.intervention?.level ?? "observe";
+  const interventionDirective = buildInterventionDirectiveV1(interventionLevel);
 
   const coreInterventionLine =
     core?.intervention
@@ -139,37 +139,52 @@ Bitte gib NUR ein JSON im beschriebenen Format zurück.
 
     const completion = await deps.openai.chat.completions.create({
       model: deps.model,
-
-
-
-      
       messages: [
         { role: "system", content: deps.systemPrompt },
+        { role: "system", content: interventionDirective },
         { role: "user", content: userPrompt },
       ],
       temperature: 0.2,
     });
 
     const raw = completion.choices[0]?.message?.content ?? "{}";
+    logger.info("llmBrain_raw_response", { userId, rawPreview: raw.slice(0, 200) });
+
     const parsed = deps.safeParseAssistantJson(raw);
 
-    if (!parsed || typeof parsed !== "object") {
+    // 1) parsed muss Objekt sein (kein Array)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return { reply: deps.fallbackCopy.invalidJson, newFacts: [], actions: [], tasks: [] };
     }
 
-    const newFacts = deps.validateIngestFacts(
-      userId,
-      Array.isArray(parsed.newFacts) ? parsed.newFacts : [],
-      { filename: null, source: null },
-      { maxFacts: 50 }
-    );
+    // 2) reply muss nicht-leer sein
+    const reply =
+      typeof (parsed as any).reply === "string" ? String((parsed as any).reply).trim() : "";
 
-    return {
-      reply: typeof parsed.reply === "string" ? parsed.reply : "",
-      newFacts,
-      actions: Array.isArray(parsed.actions) ? parsed.actions : [],
-      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
-    };
+    if (!reply) {
+      return { reply: deps.fallbackCopy.invalidJson, newFacts: [], actions: [], tasks: [] };
+    }
+
+    // 3) Arrays defensiv normalisieren
+    const actions = Array.isArray((parsed as any).actions) ? (parsed as any).actions : [];
+    const tasks = Array.isArray((parsed as any).tasks) ? (parsed as any).tasks : [];
+
+    // 4) FINAL: newFacts ist IMMER leer (Satellite ist reply-only)
+    const newFacts: any[] = [];
+
+    // 5) Contract enforcement darf Function NICHT crashen → safe fallback
+    try {
+      assertSatelliteReplyMatchesInterventionV1(interventionLevel, reply);
+    } catch (e) {
+      logger.warn("satellite_contract_violation", {
+        userId,
+        level: interventionLevel,
+        error: String(e),
+      });
+      return { reply: deps.fallbackCopy.invalidJson, newFacts: [], actions: [], tasks: [] };
+    }
+
+    return { reply, newFacts, actions, tasks };
   } catch (err) {
     logger.error("runLlmBrainSatellite_failed", { userId, error: String(err) });
     return { reply: deps.fallbackCopy.genericError, newFacts: [], actions: [], tasks: [] };

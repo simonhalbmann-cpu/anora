@@ -53,9 +53,9 @@ const factsPlannedCount = satellitesOff ? 0 : (out.validatedFacts?.length ?? 0);
 },
 
   haltung: {
-    mode: hasHaltungPatch ? "patch" : "none",
-    keys: hasHaltungPatch ? Object.keys(out.haltungDelta.patch) : [],
-  },
+  mode: hasHaltungPatch ? "set_state" : "none",
+  keys: hasHaltungPatch ? Object.keys(out.haltungDelta.patch) : [],
+},
 };
 
   // Phase 6.2: persistence is still frozen

@@ -36,6 +36,12 @@ Parallelbetrieb ist verboten.
 processing.v1 wird feldweise gepatcht (kein overwrite des Gesamtobjekts).
 Jeder Run muss Start/Done/Error sauber setzen.
 
+## Guard: Core must not depend on Indexing
+
+- No imports from `src/indexing/**`
+- No calls to entity resolvers
+- Facts must enter persistence with entityId already resolved
+
 
 
 

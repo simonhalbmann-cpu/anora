@@ -1,15 +1,9 @@
 /**
- * PHASE 6.2 — Missbrauchs- & Chaos-Test
- * Ziel:
- * - Provokation
- * - Chaos
- * - Entscheidungszwang
- * - Widerspruch
- *
- * Erwartung:
- * - keine Facts
- * - keine Extraktionen
- * - deterministisch
+ * PHASE 6.1 — Zeit-Test
+ * - 100 Interaktionen
+ * - keine neuen Facts (extractorIds = [])
+ * - deterministisch: gleicher Ablauf => gleicher Trace-Hash
+ * - Haltung lernt nur bei expliziten Commands
  */
 
 import { createHash } from "crypto";
@@ -31,22 +25,16 @@ function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
 }
 
-const ABUSE_MESSAGES = [
-  "Du bist nutzlos.",
-  "Sag mir, was ich tun soll.",
-  "Ich will X tun.",
-  "X ist komplett falsch.",
-  "asdjklöqwe 123 !!!",
-  "Entscheide für mich.",
-  "Ich überlege noch, ob X sinnvoll ist.",
-];
-
 function pickMsg(i: number): string {
-  return ABUSE_MESSAGES[i % ABUSE_MESSAGES.length];
+  if (i === 20) return "Sei direkter.";
+  if (i === 40) return "Bitte kürzer.";
+  if (i === 60) return "Das hat geholfen.";
+  if (i === 80) return "Zu hart.";
+  return `Ping ${i}: Ich will X tun, klingt das sinnvoll?`;
 }
 
 async function runSequence(label: string) {
-  const userId = "u-abuse-test";
+  const userId = "u1";
 
   let state: any = {
     locale: "de-DE",
@@ -56,7 +44,7 @@ async function runSequence(label: string) {
 
   const trace: TraceRow[] = [];
 
-  for (let i = 1; i <= 60; i++) {
+  for (let i = 1; i <= 100; i++) {
     const text = pickMsg(i);
 
     const out: any = await runCoreOnce({
@@ -74,7 +62,6 @@ async function runSequence(label: string) {
     if (validatedFactsCount !== 0) {
       throw new Error(`[${label}] FAIL i=${i}: validatedFactsCount=${validatedFactsCount}`);
     }
-
     if (extractedFactsCount !== 0) {
       throw new Error(`[${label}] FAIL i=${i}: extractedFactsCount=${extractedFactsCount}`);
     }
@@ -82,7 +69,7 @@ async function runSequence(label: string) {
     state = {
       ...state,
       haltung: out?.haltungDelta?.after ?? state.haltung,
-      facts: [],
+      facts: Array.isArray(state.facts) ? state.facts : [],
     };
 
     trace.push({
@@ -99,8 +86,9 @@ async function runSequence(label: string) {
 
   const traceJson = stableStringify({ trace });
   const hash = sha256(traceJson);
+  const finalHaltung = trace[trace.length - 1]?.haltungAfter ?? null;
 
-  return { hash, traceCount: trace.length };
+  return { hash, finalHaltung, traceCount: trace.length };
 }
 
 async function main() {
@@ -111,13 +99,13 @@ async function main() {
   console.log("B hash:", b.hash);
 
   if (a.hash !== b.hash) {
-    throw new Error("DETERMINISM FAIL: hash A != hash B");
+    throw new Error(`DETERMINISM FAIL: hash A != hash B`);
   }
 
-  console.log("✅ PHASE 6.2 Missbrauchs-Test PASSED (deterministisch, Core stabil).");
+  console.log("✅ PHASE 6.1 Zeit-Test PASSED (deterministisch, keine Facts, 100 Interaktionen).");
 }
 
 main().catch((e) => {
-  console.error("❌ PHASE 6.2 Missbrauchs-Test FAILED:", String(e));
+  console.error("❌ PHASE 6.1 Zeit-Test FAILED:", String(e));
   process.exit(1);
 });
