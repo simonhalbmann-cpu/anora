@@ -8,7 +8,8 @@
  * text -> rawEvent (in-memory) -> extractors -> validatedFacts
  * -> factsDiff (new/ignored) -> haltungDelta -> intervention
  */
-
+import { FROZEN } from "./CORE_FREEZE";
+import { toEntityDomain } from "./entities/types";
 import { dayBucketUTC, sha256 } from "./rawEvents/hash";
 import type { RawEventDoc } from "./rawEvents/types";
 
@@ -30,10 +31,23 @@ import { getExtractor, listExtractors } from "./facts/registry";
 import { toExtractorInputV1 } from "./runner/extractorInput";
 
 import { mapIdFromFingerprint, normalizeFingerprint } from "./entities/fingerprint";
+import { stableStringify } from "./utils/stableStringify";
+
+import { getSatellite } from "./satellites/registry";
+import type { SatelliteInput, SatelliteOutput } from "./satellites/satelliteContract";
 
 // -----------------------
 // Types
 // -----------------------
+
+type ConflictEventV1 = {
+  entityId: string;
+  key: string;
+  userValue: any;
+  docValue: any;
+  userFactId?: string;
+  docFactId?: string;
+};
 
 export type RunCoreOnceInput = {
   userId: string;
@@ -51,6 +65,8 @@ export type RunCoreOnceInput = {
     meta?: Record<string, any>;
   }[];
   haltung?: CoreHaltungV1;
+  // optional: allow satellites; [] means "none"
+  satelliteIds?: string[];
 };
 
   // optional: allow limiting extractors; [] means "none"
@@ -83,10 +99,21 @@ export type RunCoreOnceOutput = {
     conflict?: boolean;
   }[];
 
+  conflicts?: ConflictEventV1[];
+
   factsDiff: {
-    new: string[];
-    ignored: string[];
-  };
+  new: string[];
+  updated: string[];  // ✅ NEU: existiert, aber Inhalt anders
+  ignored: string[];
+};
+
+// Optional, aber extrem hilfreich fürs Debugging & spätere History:
+factsChanges?: {
+  factId: string;
+  kind: "new" | "updated" | "ignored";
+  key: string;
+  entityId: string;
+}[];
 
   haltungDelta: {
     before: CoreHaltungV1;
@@ -185,6 +212,26 @@ function normalizeValidityWindow(v: any): ValidityWindow | undefined {
   return { from, to };
 }
 
+function canonicalizeFactForCompare(f: any) {
+  if (!f || typeof f !== "object") return f;
+
+  const {
+    // volatile Felder ignorieren
+    createdAt,
+    updatedAt,
+
+    // Rest vergleichen wir
+    ...rest
+  } = f;
+
+  return rest;
+}
+
+function stableEqual(a: any, b: any): boolean {
+  
+  return stableStringify(a) === stableStringify(b);
+}
+
 function toValidatedFactPure(f: FactInput, localeFallback: string) {
   const rawDomain = typeof (f as any).domain === "string" ? String((f as any).domain) : "generic";
   const domain = rawDomain.trim() || "generic";
@@ -197,6 +244,15 @@ function toValidatedFactPure(f: FactInput, localeFallback: string) {
 
   // key normalization (system keys pass through in normalizeFactKey)
   const key = normalizeFactKey(String((f as any).key ?? ""), domain as any, meta);
+
+  // Phase 1.2 strict: reject "silent normalization" for non-system facts.
+// If normalizeFactKey changes the key, we treat it as invalid input.
+const rawKey = typeof (f as any).key === "string" ? String((f as any).key).trim() : "";
+const isSystem = !!(meta && (meta as any).system === true);
+
+if (!isSystem && rawKey && key !== rawKey) {
+  throw new Error(`fact_rejected_key_normalized:${rawKey}=>${key}`);
+}
 
   // value normalization
   const value = normalizeFactValueByLocale((f as any).value ?? null, locale);
@@ -264,7 +320,7 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
   // 0) Normalize input
   const userId = String(input?.userId ?? "").trim();
   if (!userId) throw new Error("runCoreOnce: userId missing");
-
+  
   const text = String(input?.text ?? "");
   const locale = String(input?.state?.locale ?? "de-DE");
 
@@ -274,10 +330,6 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
     : listExtractors();
 
   const prevFacts = Array.isArray(input?.state?.facts) ? input.state!.facts! : [];
-  const prevFactIdSet = new Set(
-    prevFacts.map((f) => String(f.factId ?? "").trim()).filter(Boolean)
-  );
-
   const hBefore = normalizeHaltungPure(input?.state?.haltung);
 
   // 1) Build in-memory RawEvent (deterministic)
@@ -329,10 +381,21 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
       const w = Array.isArray((res as any)?.warnings) ? ((res as any).warnings as string[]) : [];
 
       // Phase 1 strict: reject invalid facts (same rule-shape as existing runner)
-      const cleaned = facts.filter((f: any) => validateFactInputV1Pure(f).ok);
+const cleaned = facts.filter((f: any) => validateFactInputV1Pure(f).ok);
 
-      extractedFacts.push(...cleaned);
-      warnings.push(...w);
+// Phase 4.2: chat-input facts are user claims (core rule)
+const userClaimFacts = cleaned.map((f: any) => ({
+  ...f,
+  meta: {
+    ...(f?.meta && typeof f.meta === "object" ? f.meta : {}),
+    source: (f?.meta && typeof f.meta === "object" && typeof f.meta.source === "string")
+      ? f.meta.source
+      : "user_claim",
+  },
+}));
+
+extractedFacts.push(...userClaimFacts);
+warnings.push(...w);
 
       perExtractor.push({
         extractorId,
@@ -345,26 +408,269 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
     }
   }
 
-  // 3) Validate + normalize + compute factIds (pure)
-  const validatedFacts: RunCoreOnceOutput["validatedFacts"] = [];
-  for (const f of extractedFacts) {
-    const v = validateFactInputV1Pure(f);
-    if (!v.ok) continue;
+// 2.5) Satellites (pure) — Phase 4.1: collect proposed facts (no writes)
+  const satelliteIds = Array.isArray(input?.state?.satelliteIds)
+  ? input.state!.satelliteIds
+  : []; // default OFF
+  const satelliteOutputs: SatelliteOutput[] = [];
 
-    const vf = toValidatedFactPure(f, locale);
-    // Hard guard: must have key + entityId + factId
-    if (!vf.key || !vf.entityId || !vf.factId) continue;
+  if (satelliteIds.length > 0) {
+    const baseInput: Omit<SatelliteInput, "satelliteId"> = {
+  userId,
+  channel: "api_ingest",
+  plan: { tier: "free", flags: {} },
+  guaranteedInput: {
+    rawEvent: {
+      rawEventId,
+      sourceType: "document",
+      payload: {
+        text,
+        // KEINE nulls -> weglassen
+      },
+      meta: { userRef: userId },
+    },
+    existingFacts: prevFacts.map((f: any) => ({
+      factId: f.factId,
+      domain: f.domain,
+      key: f.key,
+      value: f.value,
+      meta: f.meta,
+    })),
+    metaSnapshot: { locale, now: 0, timezone: "UTC", flags: {} },
+  },
+};
 
-    validatedFacts.push(vf);
+    for (const satIdRaw of satelliteIds) {
+      const satId = String(satIdRaw ?? "").trim();
+      if (!satId) continue;
+
+      const def = getSatellite(satId);
+      if (!def) {
+        warnings.push(`satellite_missing:${satId}`);
+        continue;
+      }
+
+      try {
+        const outSat = await def.run({ ...baseInput, satelliteId: satId });
+        satelliteOutputs.push(outSat);
+      } catch (e) {
+        warnings.push(`satellite_failed:${satId}:${String(e)}`);
+      }
+    }
   }
 
-  // 4) factsDiff (pure)
-  const diffNew: string[] = [];
-  const diffIgnored: string[] = [];
-  for (const f of validatedFacts) {
-    if (prevFactIdSet.has(f.factId)) diffIgnored.push(f.factId);
-    else diffNew.push(f.factId);
+  // Map satellite propose_facts -> FactInput (still goes through strict validation below)
+  const proposedFacts: FactInput[] = [];
+  for (const sOut of satelliteOutputs) {
+    if (!sOut || (sOut as any).ok !== true) continue;
+
+    const suggestions = Array.isArray((sOut as any).suggestions) ? (sOut as any).suggestions : [];
+    for (const sug of suggestions) {
+      if (!sug || sug.kind !== "propose_facts") continue;
+
+      const facts = Array.isArray(sug.facts) ? sug.facts : [];
+      for (const pf of facts) {
+        const domainRaw = String(pf?.domain ?? "").trim();
+if (!domainRaw) continue;
+
+// HARD FREEZE GATE
+if (!(FROZEN.domains as readonly string[]).includes(domainRaw)) continue;
+
+// typed domain (throws if not frozen-allowed)
+const domain = toEntityDomain(domainRaw);
+        const key = String(pf?.key ?? "").trim();
+        const sourceRef = String(pf?.sourceRef ?? "").trim();
+
+        if (!domain || !key || !sourceRef) continue;
+
+        // HARD FREEZE GATE
+        if (!(FROZEN.domains as readonly string[]).includes(domain)) continue;
+        if (!(FROZEN.factKeys as readonly string[]).includes(key)) continue;
+
+        // Entity Strategy (deterministic, stable per user)
+        const entityFingerprint = `user:${userId}::doc_summary`;
+
+        const meta = pf?.meta && typeof pf.meta === "object" ? pf.meta : undefined;
+
+        proposedFacts.push({
+          domain,
+          key,
+          value: typeof pf?.value === "undefined" ? null : pf.value,
+
+          // IMPORTANT: NOT raw_event (otherwise extractor freeze rejects)
+          source: "other",
+          sourceRef,
+
+          entityDomain: domain,
+          entityType: "document",
+          entityFingerprint,
+
+          meta: {
+            ...(meta ?? {}),
+            system: true,
+            latest: true,
+            locale,
+            satelliteId: (sOut as any).satelliteId,
+          },
+        });
+      }
+    }
   }
+
+  // feed into the normal pipeline
+  if (proposedFacts.length > 0) {
+    extractedFacts.push(...proposedFacts);
+  }
+
+
+
+  // 3) Validate + normalize + compute factIds (pure) + Phase 1.2 strict validation
+const validatedFacts: RunCoreOnceOutput["validatedFacts"] = [];
+
+// Phase 4.2: collect conflicts
+const conflictEvents: ConflictEventV1[] = [];
+
+for (const f of extractedFacts) {
+  const v = validateFactInputV1Pure(f);
+  if (!v.ok) continue;
+
+  let vf: any;
+  try {
+    vf = toValidatedFactPure(f, locale);
+  } catch (e) {
+    // Phase 1.2: reject instead of "correcting" (do NOT crash the run)
+    warnings.push(`fact_rejected_toValidatedFact_error:${String(e)}`);
+    continue;
+  }
+
+  // Hard guard: must have key + entityId + factId
+  if (!vf.key || !vf.entityId || !vf.factId) {
+    warnings.push("fact_rejected_missing_core_fields");
+    continue;
+  }
+
+  // Phase 1.2: domain must be frozen-allowed
+  const domain = String(vf.domain ?? "").trim();
+  if (!domain || !(FROZEN.domains as readonly string[]).includes(domain)) {
+    warnings.push(`fact_rejected_domain_not_frozen:${domain || "EMPTY"}`);
+    continue;
+  }
+
+  // Phase 1.2: extractorId must be frozen-allowed (only enforce for raw_event sourced facts)
+  const source = String(vf.source ?? "").trim();
+  const extractorId = String(vf.meta?.extractorId ?? "").trim();
+
+  if (source === "raw_event") {
+    if (!extractorId) {
+      warnings.push("fact_rejected_missing_extractorId");
+      continue;
+    }
+    if (!(FROZEN.extractors as readonly string[]).includes(extractorId)) {
+      warnings.push(`fact_rejected_extractor_not_frozen:${extractorId}`);
+      continue;
+    }
+  }
+
+  validatedFacts.push(vf);
+}
+
+// 3.5) Phase 4.2 — user overrides document (pure)
+// Rule: if a user_claim exists for same (entityId,key) and value differs,
+// mark the non-user fact as conflict=true and emit debug conflict events.
+// No writes, no chat output.
+
+const userClaimByEntityKey = new Map<string, any>();
+for (const f of validatedFacts) {
+  const src = String((f as any)?.meta?.source ?? "").trim();
+  if (src !== "user_claim") continue;
+  const k = `${String((f as any).entityId)}::${String((f as any).key)}`;
+  // first one wins deterministically (validatedFacts order is deterministic)
+  if (!userClaimByEntityKey.has(k)) userClaimByEntityKey.set(k, f);
+}
+
+const validatedFactsWithConflicts = validatedFacts.map((f: any) => {
+  const src = String(f?.meta?.source ?? "").trim();
+  if (src === "user_claim") return f;
+
+  const k = `${String(f.entityId)}::${String(f.key)}`;
+  const u = userClaimByEntityKey.get(k);
+  if (!u) return f;
+
+  const sameValue = stableStringify(u.value) === stableStringify(f.value);
+  if (sameValue) return f;
+
+  // mark document/non-user fact as conflicted
+  conflictEvents.push({
+    entityId: String(f.entityId),
+    key: String(f.key),
+    userValue: u.value,
+    docValue: f.value,
+    userFactId: String(u.factId ?? ""),
+    docFactId: String(f.factId ?? ""),
+  });
+
+  return { ...f, conflict: true };
+});
+
+const finalFacts = validatedFactsWithConflicts;
+
+// replace for downstream steps
+validatedFacts.length = 0;
+validatedFacts.push(...validatedFactsWithConflicts);
+
+  // 4) factsDiff (pure) — NEW vs UPDATED vs IGNORED
+const diffNew: string[] = [];
+const diffUpdated: string[] = [];
+const diffIgnored: string[] = [];
+
+const changes: {
+  factId: string;
+  kind: "new" | "updated" | "ignored";
+  key: string;
+  entityId: string;
+}[] = [];
+
+// Map: prev facts by factId (schnell)
+const prevById = new Map<string, any>();
+for (const pf of prevFacts) {
+  const id = String((pf as any)?.factId ?? "").trim();
+  if (id) prevById.set(id, pf);
+}
+
+for (const f of finalFacts) {
+  const prev = prevById.get(f.factId);
+
+  if (!prev) {
+    diffNew.push(f.factId);
+    changes.push({ factId: f.factId, kind: "new", key: f.key, entityId: f.entityId });
+    continue;
+  }
+
+  // Vergleich: prev vs next (ohne volatile timestamps)
+  const prevCanon = canonicalizeFactForCompare(prev);
+  const nextCanon = canonicalizeFactForCompare({
+    factId: f.factId,
+    entityId: f.entityId,
+    domain: f.domain,
+    key: f.key,
+    value: f.value,
+    validity: f.validity ?? null,
+    meta: f.meta ?? null,
+    source: f.source ?? null,
+    sourceRef: f.sourceRef ?? null,
+    conflict: f.conflict ?? false,
+  });
+
+  const same = stableEqual(prevCanon, nextCanon);
+
+  if (same) {
+    diffIgnored.push(f.factId);
+    changes.push({ factId: f.factId, kind: "ignored", key: f.key, entityId: f.entityId });
+  } else {
+    diffUpdated.push(f.factId);
+    changes.push({ factId: f.factId, kind: "updated", key: f.key, entityId: f.entityId });
+  }
+}
 
   // 5) Haltung (pure)
   const triggers = computeHaltungTriggersFromMessage({ message: text });
@@ -383,26 +689,50 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
   });
 
   return {
-    rawEvent: { rawEventId, doc: rawEventDoc },
-    validatedFacts,
-    factsDiff: { new: diffNew, ignored: diffIgnored },
-    haltungDelta: {
-      before: hBefore,
-      after: hAfter,
-      patch,
-      learningEvent: learningEvent ? { ...learningEvent } : null,
-      triggers,
-    },
-    intervention,
+  rawEvent: { rawEventId, doc: rawEventDoc },
+  validatedFacts: finalFacts,
+  conflicts: conflictEvents,
+  factsDiff: { new: diffNew, updated: diffUpdated, ignored: diffIgnored },
+  factsChanges: changes,
 
-    effects: { writesPlanned: false },
+  haltungDelta: {
+    before: hBefore,
+    after: hAfter,
+    patch,
+    learningEvent: learningEvent ? { ...learningEvent } : null,
+    triggers,
+  },
 
-    debug: {
-      extractorIds,
-      warningsCount: warnings.length,
-      extractedFactsCount: extractedFacts.length,
-      validatedFactsCount: validatedFacts.length,
-      perExtractor,
+  intervention,
+  effects: { writesPlanned: false },
+
+  debug: {
+    extractorIds,
+    warningsCount: warnings.length,
+    extractedFactsCount: extractedFacts.length,
+    validatedFactsCount: validatedFacts.length,
+    perExtractor,
+
+    // nur Debug, bounded
+    satellites: {
+      requested: satelliteIds,
+      ran: satelliteOutputs
+        .map((o: any) => ({
+          satelliteId: o?.satelliteId,
+          ok: o?.ok === true,
+          insightsCount: Array.isArray(o?.insights) ? o.insights.length : 0,
+          suggestionsKinds: Array.isArray(o?.suggestions)
+            ? o.suggestions.map((s: any) => s?.kind).filter(Boolean).slice(0, 10)
+            : [],
+        }))
+        .slice(0, 5),
     },
-  };
+
+    conflicts: {
+  count: conflictEvents.length,
+  sample: conflictEvents.slice(0, 10),
+},
+
+  },
+};
 }

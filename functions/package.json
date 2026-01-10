@@ -9,7 +9,8 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "lint": "eslint \"src/**/*.{ts,tsx,js,jsx}\"",
-    "lint:pure": "eslint \"src/core/runCoreOnce.ts\" \"src/core/runCoreWithPersistence.ts\" \"src/core/bridgePure.ts\" \"src/scripts/**/*.{ts,tsx,js,jsx}\""
+    "lint:pure": "eslint \"src/core/runCoreOnce.ts\" \"src/core/runCoreWithPersistence.ts\" \"src/core/bridgePure.ts\" \"src/scripts/**/*.{ts,tsx,js,jsx}\"",
+    "test:phase11": "powershell -ExecutionPolicy Bypass -File .\\src\\scripts\\runPhase11Suite.ps1"
   },
   "engines": {
     "node": "22"
@@ -23,6 +24,9 @@
   },
   "devDependencies": {
     "@types/node-fetch": "^2.6.13",
+    "@typescript-eslint/eslint-plugin": "^8.52.0",
+    "@typescript-eslint/parser": "^8.52.0",
+    "eslint": "^9.39.2",
     "firebase-functions-test": "^3.4.1",
     "typescript": "^5.7.3"
   },

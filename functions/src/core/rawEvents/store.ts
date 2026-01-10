@@ -121,7 +121,7 @@ export async function getRawEventById(
 
 export async function listRawEvents(
   opts: ListOptions
-): Promise<Array<{ id: string; data: RawEventDoc }>> {
+): Promise<{ id: string; data: RawEventDoc }[]> {
   const limit =
     typeof opts.limit === "number"
       ? Math.min(Math.max(opts.limit, 1), 200)

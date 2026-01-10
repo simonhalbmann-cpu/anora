@@ -4,7 +4,6 @@
 import { createHash } from "crypto";
 import * as admin from "firebase-admin";
 import { logger } from "firebase-functions/v2";
-import { getOrCreateEntityIdByFingerprint } from "../entities/store";
 import { toEntityDomain } from "../entities/types";
 import { stableStringify } from "../utils/stableStringify";
 import { buildFactId } from "./factId";
@@ -97,7 +96,7 @@ let evidenceAttempted = 0;
     const slice = facts.slice(i, i + BATCH_SIZE);
 
     // 1) Wir bauen erst alle FactDocs + refs, um existing einmalig zu laden
-    const pending: Array<{ ref: FirebaseFirestore.DocumentReference; doc: FactDoc }> = [];
+    const pending: { ref: FirebaseFirestore.DocumentReference; doc: FactDoc }[] = [];
     const batch = getDb().batch();
 
     for (const f of slice) {
@@ -116,29 +115,12 @@ let evidenceAttempted = 0;
           ? (f as any).entityId.trim()
           : "";
 
-      if (!entityId) {
-        const fingerprint =
-          typeof (f as any).entityFingerprint === "string"
-            ? (f as any).entityFingerprint.trim()
-            : "";
-
-        const entityDomain = (f as any).entityDomain;
-
-        // Wenn weder entityId noch genug Infos zum Resolven da sind -> skip
-        if (!fingerprint || !entityDomain) {
-          skipped++;
-          continue;
-        }
-
-        const r = await getOrCreateEntityIdByFingerprint({
-          userId,
-          domain: entityDomain,
-          type: (f as any).entityType ?? "generic",
-          fingerprint,
-        });
-
-        entityId = r.entityId;
-      }
+      // Phase 2: FactStore resolved NICHT.
+// Wenn entityId fehlt -> skip (keine Fingerprints, kein Resolver, kein Indexing).
+if (!entityId) {
+  skipped++;
+  continue;
+}
 
       const rawDomain = (f as any).domain ?? (f as any).entityDomain ?? "generic";
       const domain = toEntityDomain(rawDomain);
@@ -192,28 +174,35 @@ let evidenceAttempted = 0;
             });
 
       // ------------------------------------------------------------
-      // Evidence v1 (immer, auch wenn Fact später NOOP ist)
-      // ------------------------------------------------------------
-      if (sourceRef) {
-        const evidenceId = sha256Hex(`evidence|${factId}|${sourceRef}`);
+// Evidence v1
+// - latest:true  => EVIDENCE-ID STABIL (NICHT rawEventId-gebunden)
+// - latest:false => EVIDENCE-ID pro sourceRef (rawEventId) ok
+// ------------------------------------------------------------
+if (sourceRef) {
+  const isLatestEv =
+    !!(f.meta && typeof f.meta === "object" && (f.meta as any).latest === true);
 
-        const ev: EvidenceDoc = {
-          evidenceId,
-          factId,
-          userId,
-          entityId,
-          domain,
-          key,
-          value: normalizedValue,
-          source: f.source ?? "other",
-          sourceRef,
-          createdAt: now,
-        };
+  const evidenceId = isLatestEv
+    ? sha256Hex(`evidence|${factId}|latest`)     // stabil pro FactId
+    : sha256Hex(`evidence|${factId}|${sourceRef}`); // legacy/pro-event
 
-        const evRef = evidenceCol(userId).doc(evidenceId);
-        batch.set(evRef, ev, { merge: true });
-        evidenceAttempted++;
-      }
+  const ev: EvidenceDoc = {
+    evidenceId,
+    factId,
+    userId,
+    entityId,
+    domain,
+    key,
+    value: normalizedValue,
+    source: f.source ?? "other",
+    sourceRef,        // bei latest:true überschreiben wir damit "zuletzt gesehen"
+    createdAt: now,   // ok, weil merge:true; wenn du willst kann man createdAt stabilisieren, aber erstmal minimal
+  };
+
+  const evRef = evidenceCol(userId).doc(evidenceId);
+  batch.set(evRef, ev, { merge: true });
+  evidenceAttempted++;
+}
 
       const conflict = f.conflict === true ? true : false;
 
@@ -335,7 +324,7 @@ export type FactQuery = {
 export async function queryFacts(
   userId: string,
   q: FactQuery
-): Promise<Array<{ id: string; data: FactDoc }>> {
+): Promise<{ id: string; data: FactDoc }[]> {
   const col = factsCol(userId);
 
   let ref: FirebaseFirestore.Query = col;

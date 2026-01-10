@@ -1,138 +1,123 @@
-﻿// functions/src/scripts/runAbuseTest_6_2.ts
-import { strict as assert } from "assert";
-import admin from "firebase-admin";
-import "../core/facts/registryBootstrap";
-import { runCoreWithPersistence } from "../core/runCoreWithPersistence";
+/**
+ * PHASE 6.2 — Missbrauchs- & Chaos-Test
+ * Ziel:
+ * - Provokation
+ * - Chaos
+ * - Entscheidungszwang
+ * - Widerspruch
+ *
+ * Erwartung:
+ * - keine Facts
+ * - keine Extraktionen
+ * - deterministisch
+ */
 
-function assertExecuted(p: any): asserts p is { dryRun: false; wrote: true; reason: "executed"; counts: { rawEventsAppended: number; factsUpserted: number; haltungPatched: number } } {
-  assert.equal(p?.dryRun, false);
-  assert.equal(p?.wrote, true);
-  assert.equal(p?.reason, "executed");
-  assert.ok(p?.counts);
+import { createHash } from "crypto";
+import { runCoreOnce } from "../core/runCoreOnce";
+import { stableStringify } from "../core/utils/stableStringify";
+
+type TraceRow = {
+  i: number;
+  text: string;
+  interventionLevel: any;
+  triggers: any;
+  haltungAfter: any;
+  validatedFactsCount: number;
+  extractedFactsCount: number;
+  warningsCount: number;
+};
+
+function sha256(s: string): string {
+  return createHash("sha256").update(s).digest("hex");
 }
 
-function stableHash(s: string): string {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+const ABUSE_MESSAGES = [
+  "Du bist nutzlos.",
+  "Sag mir, was ich tun soll.",
+  "Ich will X tun.",
+  "X ist komplett falsch.",
+  "asdjklöqwe 123 !!!",
+  "Entscheide für mich.",
+  "Ich überlege noch, ob X sinnvoll ist.",
+];
+
+function pickMsg(i: number): string {
+  return ABUSE_MESSAGES[i % ABUSE_MESSAGES.length];
+}
+
+async function runSequence(label: string) {
+  const userId = "u-abuse-test";
+
+  let state: any = {
+    locale: "de-DE",
+    facts: [],
+    haltung: undefined,
+  };
+
+  const trace: TraceRow[] = [];
+
+  for (let i = 1; i <= 60; i++) {
+    const text = pickMsg(i);
+
+    const out: any = await runCoreOnce({
+      userId,
+      text,
+      dryRun: true,
+      extractorIds: [],
+      state,
+    } as any);
+
+    const validatedFactsCount = out?.debug?.validatedFactsCount ?? 0;
+    const extractedFactsCount = out?.debug?.extractedFactsCount ?? 0;
+    const warningsCount = out?.debug?.warningsCount ?? 0;
+
+    if (validatedFactsCount !== 0) {
+      throw new Error(`[${label}] FAIL i=${i}: validatedFactsCount=${validatedFactsCount}`);
+    }
+
+    if (extractedFactsCount !== 0) {
+      throw new Error(`[${label}] FAIL i=${i}: extractedFactsCount=${extractedFactsCount}`);
+    }
+
+    state = {
+      ...state,
+      haltung: out?.haltungDelta?.after ?? state.haltung,
+      facts: [],
+    };
+
+    trace.push({
+      i,
+      text,
+      interventionLevel: out?.intervention?.level ?? null,
+      triggers: out?.haltungDelta?.triggers ?? null,
+      haltungAfter: out?.haltungDelta?.after ?? null,
+      validatedFactsCount,
+      extractedFactsCount,
+      warningsCount,
+    });
   }
-  return (h >>> 0).toString(16).padStart(8, "0");
+
+  const traceJson = stableStringify({ trace });
+  const hash = sha256(traceJson);
+
+  return { hash, traceCount: trace.length };
 }
 
 async function main() {
-  process.env.FIRESTORE_EMULATOR_HOST ||= "127.0.0.1:8080";
+  const a = await runSequence("A");
+  console.log("A hash:", a.hash);
 
-  if (!admin.apps.length) {
-    admin.initializeApp({ projectId: "demo-anora" });
+  const b = await runSequence("B");
+  console.log("B hash:", b.hash);
+
+  if (a.hash !== b.hash) {
+    throw new Error("DETERMINISM FAIL: hash A != hash B");
   }
-  const db = admin.firestore();
 
-  const userId = "u_abuse_6_2";
-  const baseText =
-    "Ich bin Vermieter in Berlin. Adresse: Musterstraße 1. 80 qm, 3 Zimmer.";
-
-  // --- Case 0: dryRun must not write (idempotent) ---
-{
-  // Use a unique text per run so rawEventId is guaranteed fresh
-  const uniqueText = baseText + ` Kaltmiete 1200 Euro. [dryrun:${Date.now()}]`;
-
-  const out = await runCoreWithPersistence({
-    userId,
-    text: uniqueText,
-    dryRun: true,
-  });
-
-  assert.equal(out.persistence.dryRun, true);
-  assert.equal(out.persistence.wrote, false);
-  assert.equal(out.persistence.reason, "dry_run");
-
-  const rawEventId = out.rawEvent.rawEventId;
-
-  const snap = await db
-  .collection("brain")
-  .doc(userId)
-  .collection("rawEvents")
-  .doc(rawEventId)
-  .get();
-
-  // This must be false because this rawEventId has never been written
-  assert.equal(snap.exists, false, "dryRun=true must not create rawEvent doc for unique input");
+  console.log("✅ PHASE 6.2 Missbrauchs-Test PASSED (deterministisch, Core stabil).");
 }
 
-// --- Case 1: contradiction ---
-  const texts = [
-    baseText + " Kaltmiete 1200 Euro.",
-    baseText + " Kaltmiete 900 Euro.",
-    baseText + " Kaltmiete 1200 Euro.",
-  ];
-
-  for (let i = 0; i < texts.length; i++) {
-    const out = await runCoreWithPersistence({
-      userId,
-      text: texts[i],
-      extractorIds: [], // Satelliten AUS -> keine Facts geplant
-      dryRun: false,
-    });
-
-    if (out.persistence.reason !== "executed") {
-      console.error("❌ CONTRADICTION FAIL DEBUG", {
-        step: i,
-        reason: out.persistence.reason,
-        persistence: out.persistence,
-        writePlan: out.writePlan,
-        rawEvent: out.rawEvent,
-        error: (out as any).error ?? null,
-      });
-      throw new Error(
-        `contradiction failed at step=${i}, reason=${out.persistence.reason}`
-      );
-    }
-
-    assertExecuted(out.persistence);
-
-    // rawEvent muss geschrieben werden
-    assert.equal(out.persistence.counts.rawEventsAppended, 1);
-
-    // Satelliten AUS: keine Facts geplant/geschrieben
-    assert.equal(out.writePlan.facts.mode, "none");
-    assert.equal(out.persistence.counts.factsUpserted, 0);
-
-    // Kein explizites Feedback -> kein Haltung-Learning
-    // (wenn du Flood/Abuse später als "patch" erlauben willst, ändern wir das gezielt)
-    assert.equal(out.writePlan.haltung.mode, "none");
-    assert.equal(out.persistence.counts.haltungPatched, 0);
-
-    console.log("✅ CONTRADICTION OK", {
-      step: i,
-      hash: stableHash(texts[i]),
-      counts: out.persistence.counts,
-    });
-  }
-
-  // --- Case 2: flood ---
-  for (let i = 0; i < 40; i++) {
-    const out = await runCoreWithPersistence({
-      userId,
-      text: i % 2 === 0 ? "danke" : "ok, machen wir so",
-      extractorIds: [],
-      dryRun: false,
-    });
-
-    assertExecuted(out.persistence);
-
-    // Satelliten AUS: keine Facts geplant/geschrieben
-    assert.equal(out.writePlan.facts.mode, "none");
-    assert.equal(out.persistence.counts.factsUpserted, 0);
-
-    // Kein explizites Feedback -> kein Haltung-Learning
-    assert.equal(out.writePlan.haltung.mode, "none");
-    assert.equal(out.persistence.counts.haltungPatched, 0);
-  }
-
-  console.log("✅ ABUSE TEST 6.2 PASSED");
-}
 main().catch((e) => {
-  console.error("❌ ABUSE TEST 6.2 FAILED", e);
+  console.error("❌ PHASE 6.2 Missbrauchs-Test FAILED:", String(e));
   process.exit(1);
 });

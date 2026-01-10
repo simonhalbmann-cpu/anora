@@ -1,4 +1,4 @@
-﻿/**
+/**
  * PHASE 4.1: deterministischer Interventions-Controller (Core)
  *
  * Input: Haltung (numerisch), Trigger (deterministisch), Message
@@ -10,8 +10,8 @@
  * - Gleiche Inputs => gleicher Output
  */
 
-import type { CoreHaltungV1 } from "../haltung/types";
 import type { HaltungTriggerResult } from "../haltung/triggers";
+import type { CoreHaltungV1 } from "../haltung/types";
 import type { CoreInterventionV1, InterventionLevel } from "./types";
 
 type ComputeInterventionInput = {
@@ -66,14 +66,23 @@ export function computeCoreInterventionV1(
   score = Math.max(0, Math.min(1, score));
 
   // Level mapping (hart)
-  let level: InterventionLevel = "observe";
-  if (score >= 0.82) level = "contradict";
-  else if (score >= 0.58) level = "recommend";
-  else if (score >= 0.32) level = "hint";
+let level: InterventionLevel = "observe";
+
+const allowContradict = hasContradiction || hasEscalation;
+
+if (score >= 0.82 && allowContradict) level = "contradict";
+else if (score >= 0.58) level = "recommend";
+else if (score >= 0.32) level = "hint";
+
+// falls score hoch wäre, aber contradict nicht erlaubt -> cap auf recommend
+if (score >= 0.82 && !allowContradict) {
+  level = "recommend";
+}
 
   // ReasonCodes (nur Codes)
   const reasonCodes: string[] = [];
   for (const t of triggers) reasonCodes.push(`trigger:${t}`);
+  if (!allowContradict && score >= 0.82) reasonCodes.push("gate:contradict_blocked");
 
   if (interventionDepth >= 0.7) reasonCodes.push("depth:high");
   else if (interventionDepth <= 0.3) reasonCodes.push("depth:low");

@@ -67,6 +67,22 @@ export function computeHaltungTriggersFromMessage(opts: {
     triggers.push("escalation_marker");
   }
 
+  // 3) Contradiction marker (MVP): explizite Widerspruchsphrasen
+  // EXTREM konservativ, weil wir noch keine Facts/History nutzen.
+  if (
+    includesAny(msg, [
+      "das stimmt nicht",
+      "stimmt nicht",
+      "falsch",
+      "nein das stimmt nicht",
+      "nein, das stimmt nicht",
+      "das ist falsch",
+      "so ist das nicht",
+    ])
+  ) {
+    triggers.push("contradiction");
+  }
+
   // contradiction / repeat_pattern kommen später (brauchen History/Facts)
   // -> bewusst jetzt noch NICHT, um Core sauber aufzubauen.
 

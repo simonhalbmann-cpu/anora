@@ -43,7 +43,7 @@ export interface DocumentDecision {
 export function decideDocumentProcessingStrategy(
   input: DocumentInput
 ): DocumentDecision {
-  const { mimeType, pages, textChars, isScanned, hasTables, quality } = input;
+  const { mimeType, pages, isScanned, hasTables, quality } = input;
 
   // 1) MIME-Whitelist:
   const lowerMime = mimeType.toLowerCase();
