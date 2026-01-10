@@ -1,19 +1,18 @@
 import type { Request, Response } from "express";
 
 import type { CoreHaltungV1 } from "../core/haltung/types";
-import type { CoreInterventionV1 } from "../core/interventions/types";
 
 import {
-    runCoreWithPersistence,
-    type RunCoreWithPersistenceInput,
+  runCoreWithPersistence,
+  type RunCoreWithPersistenceInput,
 } from "../core/runCoreWithPersistence";
 
 import { runLlmBrainSatellite } from "../core/satellites/llmBrain";
 import type { BrainInput } from "../core/satellites/types";
 
 import {
-    BRAIN_SYSTEM_PROMPT_DE,
-    BRAIN_SYSTEM_PROMPT_DE_VERSION,
+  BRAIN_SYSTEM_PROMPT_DE,
+  BRAIN_SYSTEM_PROMPT_DE_VERSION,
 } from "../prompt";
 
 type LoggerLike = {
@@ -147,34 +146,39 @@ export function createApiHandler(deps: ApiHandlerDeps) {
 
       const out = await runCoreWithPersistence(input);
 
-      let reply: string | null = null;
+// 🔒 HARTE TRENNUNG: Ingest / Golden Test = KEIN Brain
+if (!useSatellite) {
+  res.status(200).json({ ok: true, out });
+  return;
+}
 
-      if (useSatellite) {
-        const brainInput: BrainInput = {
-          userId,
-          userName,
-          message: text,
-          knowledge: Array.isArray(body?.brain?.knowledge) ? body.brain.knowledge : [],
-          history: Array.isArray(body?.brain?.history) ? body.brain.history : [],
-          contexts: body?.brain?.contexts ?? null,
-        };
+// --- AB HIER NUR CHAT / BRAIN ---
+let reply: string | null = null;
 
-        const interventionCandidate =
-          (out as any)?.intervention ?? (out as any)?.core?.intervention ?? null;
+const brainInput: BrainInput = {
+  userId,
+  userName,
+  message: text,
+  knowledge: Array.isArray(body?.brain?.knowledge) ? body.brain.knowledge : [],
+  history: Array.isArray(body?.brain?.history) ? body.brain.history : [],
+  contexts: body?.brain?.contexts ?? null,
+};
 
-        const coreForSatellite: { intervention?: CoreInterventionV1 } | undefined =
-          interventionCandidate ? { intervention: interventionCandidate } : undefined;
+const interventionCandidate =
+  (out as any)?.intervention ?? (out as any)?.core?.intervention ?? null;
 
-        const brainOut = await runLlmBrainSatellite(
-          llmDeps as any,
-          brainInput,
-          coreForSatellite
-        );
+const coreForSatellite =
+  interventionCandidate ? { intervention: interventionCandidate } : undefined;
 
-        reply = brainOut.reply ?? "";
-      }
+const brainOut = await runLlmBrainSatellite(
+  llmDeps as any,
+  brainInput,
+  coreForSatellite
+);
 
-      res.status(200).json({ ok: true, out, reply });
+reply = brainOut.reply ?? "";
+
+res.status(200).json({ ok: true, out, reply });
     } catch (err) {
       deps.logger.error("apiHandler_failed", { error: String(err) });
       res.status(500).json({ ok: false, error: "Internal server error" });

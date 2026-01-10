@@ -1,14 +1,24 @@
 // functions/src/core/satellites/document-understanding/index.ts
-import { hintInsurance } from "../domain-adapters/insurance";
-import { hintLegal } from "../domain-adapters/legal";
-import { hintRealEstate } from "../domain-adapters/real_estate";
-import { hintTax } from "../domain-adapters/tax";
 import type { SatelliteInput, SatelliteInsight, SatelliteOutput, SatelliteScores } from "../satelliteContract";
 import { gateProposedFacts } from "./contract";
 import { scoreUnderstandingConfidence } from "./understanding/confidence";
 import { classifyDocType } from "./understanding/docType";
 import { extractSignals } from "./understanding/signals";
 import { detectStructure } from "./understanding/structure";
+
+// Phase 4.x: Domain-Hints sind bewusst deaktiviert.
+// (Keine domain-adapters Imports in Phase 4.)
+type DomainHintV1 = {
+  domain: string;
+  confidence: number;
+  reason?: string;
+  breakdown?: any;
+  hints?: Record<string, any>;
+};
+
+const domainHints: DomainHintV1[] = [];
+const topDomain: DomainHintV1 | null = null;
+
 
 export const DOCUMENT_UNDERSTANDING_SATELLITE_ID =
   "document-understanding.v1" as const;
@@ -50,24 +60,6 @@ export async function runDocumentUnderstandingSatellite(
     hasText,
     scannedLike,
   });
-
-const domainHintInput = {
-    docTypeRes,
-    structureRes,
-    signalsRes,
-    confidenceRes,
-    hasText,
-    scannedLike,
-  };
-
-  const domainHints = [
-    hintRealEstate(domainHintInput),
-    hintLegal(domainHintInput),
-    hintInsurance(domainHintInput),
-    hintTax(domainHintInput),
-  ].sort((a, b) => b.confidence - a.confidence);
-
-  const topDomain = domainHints[0] ?? null;
 
   // ----------------------------
   // PHASE 4.1: PROPOSED FACTS (NO WRITES)

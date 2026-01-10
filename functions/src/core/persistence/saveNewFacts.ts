@@ -2,8 +2,14 @@
 
 import admin from "firebase-admin";
 
-// Wichtig: db exakt so erstellen wie im God-File
-const db = admin.firestore();
+// WICHTIG: niemals admin.firestore() auf Top-Level,
+// weil der Functions-Emulator Module importiert, bevor index.ts initializeApp() ausführt.
+function getDb() {
+  if (!admin.apps.length) {
+    admin.initializeApp();
+  }
+  return admin.firestore();
+}
 
 export type BrainFactInput = {
   type?: string;
@@ -15,6 +21,7 @@ export type BrainFactInput = {
 export async function saveNewFacts(userId: string, facts: BrainFactInput[]) {
   if (!facts || facts.length === 0) return;
 
+  const db = getDb();
   const col = db.collection("brain").doc(userId).collection("facts");
   const batch = db.batch();
   const now = Date.now();

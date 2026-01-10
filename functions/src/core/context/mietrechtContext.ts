@@ -3,8 +3,13 @@
 import admin from "firebase-admin";
 import { logger } from "firebase-functions/v2";
 
-// Wichtig: db exakt so erstellen wie im God-File
-const db = admin.firestore();
+function getDb() {
+  // defensiv: falls diese Datei jemals ohne src/index.ts importiert wird
+  if (!admin.apps.length) {
+    admin.initializeApp();
+  }
+  return admin.firestore();
+}
 
 // ---- Meta helpers (minimal, analog zum God-File) ----
 async function setMetaContext(
@@ -12,6 +17,7 @@ async function setMetaContext(
   key: string,
   doc: Record<string, any>
 ): Promise<void> {
+  const db = getDb(); // <-- WICHTIG: hier, nicht top-level
   const ref = db.collection("brain").doc(userId).collection("meta").doc(key);
   await ref.set(doc, { merge: true });
 }
