@@ -40,6 +40,15 @@ import type { SatelliteInput, SatelliteOutput } from "./satellites/satelliteCont
 // Types
 // -----------------------
 
+type ConflictEventV1 = {
+  entityId: string;
+  key: string;
+  userValue: any;
+  docValue: any;
+  userFactId?: string;
+  docFactId?: string;
+};
+
 export type RunCoreOnceInput = {
   userId: string;
   text: string;
@@ -89,6 +98,8 @@ export type RunCoreOnceOutput = {
     sourceRef?: string;
     conflict?: boolean;
   }[];
+
+  conflicts?: ConflictEventV1[];
 
   factsDiff: {
   new: string[];
@@ -370,10 +381,21 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
       const w = Array.isArray((res as any)?.warnings) ? ((res as any).warnings as string[]) : [];
 
       // Phase 1 strict: reject invalid facts (same rule-shape as existing runner)
-      const cleaned = facts.filter((f: any) => validateFactInputV1Pure(f).ok);
+const cleaned = facts.filter((f: any) => validateFactInputV1Pure(f).ok);
 
-      extractedFacts.push(...cleaned);
-      warnings.push(...w);
+// Phase 4.2: chat-input facts are user claims (core rule)
+const userClaimFacts = cleaned.map((f: any) => ({
+  ...f,
+  meta: {
+    ...(f?.meta && typeof f.meta === "object" ? f.meta : {}),
+    source: (f?.meta && typeof f.meta === "object" && typeof f.meta.source === "string")
+      ? f.meta.source
+      : "user_claim",
+  },
+}));
+
+extractedFacts.push(...userClaimFacts);
+warnings.push(...w);
 
       perExtractor.push({
         extractorId,
@@ -500,8 +522,14 @@ const domain = toEntityDomain(domainRaw);
     extractedFacts.push(...proposedFacts);
   }
 
+
+
   // 3) Validate + normalize + compute factIds (pure) + Phase 1.2 strict validation
 const validatedFacts: RunCoreOnceOutput["validatedFacts"] = [];
+
+// Phase 4.2: collect conflicts
+const conflictEvents: ConflictEventV1[] = [];
+
 for (const f of extractedFacts) {
   const v = validateFactInputV1Pure(f);
   if (!v.ok) continue;
@@ -546,6 +574,50 @@ for (const f of extractedFacts) {
   validatedFacts.push(vf);
 }
 
+// 3.5) Phase 4.2 — user overrides document (pure)
+// Rule: if a user_claim exists for same (entityId,key) and value differs,
+// mark the non-user fact as conflict=true and emit debug conflict events.
+// No writes, no chat output.
+
+const userClaimByEntityKey = new Map<string, any>();
+for (const f of validatedFacts) {
+  const src = String((f as any)?.meta?.source ?? "").trim();
+  if (src !== "user_claim") continue;
+  const k = `${String((f as any).entityId)}::${String((f as any).key)}`;
+  // first one wins deterministically (validatedFacts order is deterministic)
+  if (!userClaimByEntityKey.has(k)) userClaimByEntityKey.set(k, f);
+}
+
+const validatedFactsWithConflicts = validatedFacts.map((f: any) => {
+  const src = String(f?.meta?.source ?? "").trim();
+  if (src === "user_claim") return f;
+
+  const k = `${String(f.entityId)}::${String(f.key)}`;
+  const u = userClaimByEntityKey.get(k);
+  if (!u) return f;
+
+  const sameValue = stableStringify(u.value) === stableStringify(f.value);
+  if (sameValue) return f;
+
+  // mark document/non-user fact as conflicted
+  conflictEvents.push({
+    entityId: String(f.entityId),
+    key: String(f.key),
+    userValue: u.value,
+    docValue: f.value,
+    userFactId: String(u.factId ?? ""),
+    docFactId: String(f.factId ?? ""),
+  });
+
+  return { ...f, conflict: true };
+});
+
+const finalFacts = validatedFactsWithConflicts;
+
+// replace for downstream steps
+validatedFacts.length = 0;
+validatedFacts.push(...validatedFactsWithConflicts);
+
   // 4) factsDiff (pure) — NEW vs UPDATED vs IGNORED
 const diffNew: string[] = [];
 const diffUpdated: string[] = [];
@@ -565,7 +637,7 @@ for (const pf of prevFacts) {
   if (id) prevById.set(id, pf);
 }
 
-for (const f of validatedFacts) {
+for (const f of finalFacts) {
   const prev = prevById.get(f.factId);
 
   if (!prev) {
@@ -618,7 +690,8 @@ for (const f of validatedFacts) {
 
   return {
   rawEvent: { rawEventId, doc: rawEventDoc },
-  validatedFacts,
+  validatedFacts: finalFacts,
+  conflicts: conflictEvents,
   factsDiff: { new: diffNew, updated: diffUpdated, ignored: diffIgnored },
   factsChanges: changes,
 
@@ -654,6 +727,12 @@ for (const f of validatedFacts) {
         }))
         .slice(0, 5),
     },
+
+    conflicts: {
+  count: conflictEvents.length,
+  sample: conflictEvents.slice(0, 10),
+},
+
   },
 };
 }
