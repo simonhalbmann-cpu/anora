@@ -251,7 +251,7 @@ const initJson = await postApi("zu direkt");
 
 // Sicherheit: Plan muss Haltung schreiben
 assert(
-  initJson?.out?.writePlan?.haltung?.mode === "patch",
+  initJson?.out?.writePlan?.haltung?.mode === "set_state",
   `haltung was not planned on init: ${JSON.stringify(initJson?.out?.writePlan?.haltung)}`
 );
 
@@ -273,7 +273,7 @@ assert(
 const fbJson = await postApi("stopp, zu viel");
 
 assert(
-  fbJson?.out?.writePlan?.haltung?.mode === "patch",
+  fbJson?.out?.writePlan?.haltung?.mode === "set_state",
   `haltung was not planned on feedback: ${JSON.stringify(fbJson?.out?.writePlan?.haltung)}`
 );
 
