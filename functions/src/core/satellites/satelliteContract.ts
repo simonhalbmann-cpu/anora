@@ -10,7 +10,7 @@
 // "Core thinks. Satellites see further."
 
 /** Plan / Freemium gating */
-export type PlanTier = "free" | "plus";
+export type PlanTier = "free" | "pro";
 
 /** Where did this input come from? (input channels) */
 export type InputChannel =

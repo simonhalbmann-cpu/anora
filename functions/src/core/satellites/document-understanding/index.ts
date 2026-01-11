@@ -1,6 +1,7 @@
 // functions/src/core/satellites/document-understanding/index.ts
 import type { SatelliteInput, SatelliteInsight, SatelliteOutput, SatelliteScores } from "../satelliteContract";
 import { gateProposedFacts } from "./contract";
+import { gateDailyDigestPlan, type UserTier } from "./limits/freeProGates";
 import { scoreUnderstandingConfidence } from "./understanding/confidence";
 import { classifyDocType } from "./understanding/docType";
 import { extractSignals } from "./understanding/signals";
@@ -32,6 +33,14 @@ export async function runDocumentUnderstandingSatellite(
 ): Promise<SatelliteOutput> {
 
   const p = input.guaranteedInput.rawEvent.payload || {};
+
+  // ----------------------------
+  // Phase 5 Vorarbeit: Free/Pro Gate (deterministisch, ohne Writes)
+  // Tier kommt (vorerst) aus rawEvent.meta.tier. Fallback = "free".
+  // ----------------------------
+  const tierRaw = (input.guaranteedInput.rawEvent.meta as any)?.tier;
+  const tier: UserTier = tierRaw === "pro" ? "pro" : "free";
+  const digestGate = gateDailyDigestPlan({ tier, feature: "daily_digest_plan" });
 
   const text = typeof p.text === "string" ? p.text : null;
   const filename = typeof p.filename === "string" ? p.filename : null;
@@ -208,6 +217,14 @@ if (hasText) {
       },
     },
     {
+      code: "digest_plan_gate",
+      data: {
+        tier,
+        allowed: digestGate.allowed,
+        reasonCode: digestGate.reasonCode,
+      },
+    },
+    {
       code: "doc_domain_hints",
       data: {
         topDomain: topDomain ? { domain: topDomain.domain, confidence: topDomain.confidence, reason: topDomain.reason } : null,
@@ -271,7 +288,7 @@ if (hasText) {
     docTypeRes,
     structureRes,
     confidenceRes,
-
+    digestGate: { tier, ...digestGate },
     domainHints: domainHints.slice(0, 4).map((d) => ({
       domain: d.domain,
       confidence: d.confidence,

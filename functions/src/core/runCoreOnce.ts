@@ -65,8 +65,10 @@ export type RunCoreOnceInput = {
     meta?: Record<string, any>;
   }[];
   haltung?: CoreHaltungV1;
-  // optional: allow satellites; [] means "none"
   satelliteIds?: string[];
+
+  // ✅ NEU
+  tier?: "free" | "pro";
 };
 
   // optional: allow limiting extractors; [] means "none"
@@ -324,6 +326,9 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
   const text = String(input?.text ?? "");
   const locale = String(input?.state?.locale ?? "de-DE");
 
+  const tierRaw = input?.state?.tier;
+  const tier: "free" | "pro" = tierRaw === "pro" ? "pro" : "free";
+
   // Phase 6.1: [] means none, undefined means default(all)
   const extractorIds = Array.isArray(input?.extractorIds)
     ? input.extractorIds
@@ -415,10 +420,11 @@ warnings.push(...w);
   const satelliteOutputs: SatelliteOutput[] = [];
 
   if (satelliteIds.length > 0) {
+
     const baseInput: Omit<SatelliteInput, "satelliteId"> = {
   userId,
   channel: "api_ingest",
-  plan: { tier: "free", flags: {} },
+  plan: { tier, flags: {} },
   guaranteedInput: {
     rawEvent: {
       rawEventId,
@@ -427,7 +433,7 @@ warnings.push(...w);
         text,
         // KEINE nulls -> weglassen
       },
-      meta: { userRef: userId },
+      meta: { userRef: userId, tier },
     },
     existingFacts: prevFacts.map((f: any) => ({
       factId: f.factId,
@@ -717,14 +723,22 @@ for (const f of finalFacts) {
     satellites: {
       requested: satelliteIds,
       ran: satelliteOutputs
-        .map((o: any) => ({
-          satelliteId: o?.satelliteId,
-          ok: o?.ok === true,
-          insightsCount: Array.isArray(o?.insights) ? o.insights.length : 0,
-          suggestionsKinds: Array.isArray(o?.suggestions)
-            ? o.suggestions.map((s: any) => s?.kind).filter(Boolean).slice(0, 10)
-            : [],
-        }))
+        .map((o: any) => {
+  const insights = Array.isArray(o?.insights) ? o.insights : [];
+
+  const digestGate =
+    insights.find((i: any) => i?.code === "digest_plan_gate")?.data ?? null;
+
+  return {
+    satelliteId: o?.satelliteId,
+    ok: o?.ok === true,
+    insightsCount: insights.length,
+    suggestionsKinds: Array.isArray(o?.suggestions)
+      ? o.suggestions.map((s: any) => s?.kind).filter(Boolean).slice(0, 10)
+      : [],
+    digest_plan_gate: digestGate,
+  };
+})
         .slice(0, 5),
     },
 
