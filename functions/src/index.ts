@@ -12,6 +12,7 @@ import { getOpenAI, safeParseAssistantJson } from "./core/bridge";
 import { haltungRef } from "./core/persistence/firestoreExecutorV1";
 
 import { createApiHandler } from "./entry/apiHandler";
+import { createDigestHandler } from "./entry/digestHandler";
 import { createIndexingHandler } from "./entry/indexingHandler";
 
 // Firebase Admin init (genau einmal)
@@ -42,6 +43,11 @@ const indexingHandler = createIndexingHandler({
   logger: functionsLogger,
 });
 
+const digestHandler = createDigestHandler({
+  logger: functionsLogger,
+});
+
 // Cloud Function Entry Points
 export const api = onRequest(apiHandler);
 export const indexing = onRequest(indexingHandler);
+export const digest = onRequest(digestHandler);
