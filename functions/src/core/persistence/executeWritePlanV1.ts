@@ -2,7 +2,9 @@
 // PHASE 6.3 – impure executor (the ONLY place that writes)
 
 import admin from "firebase-admin";
+import { dayBucketUTC } from "../rawEvents/hash";
 import type { RunCoreOnceOutput } from "../runCoreOnce";
+import type { DailyDigestContributionV1 } from "../satellites/document-understanding/digest/dailyDigestPlan";
 import { sha256Hex } from "../utils/hash";
 import { stableStringify } from "../utils/stableStringify";
 import {
@@ -12,6 +14,8 @@ import {
   haltungRef,
   rawEventRef,
 } from "./firestoreExecutorV1";
+
+
 import type { CoreWritePlanV1, PersistenceResultV1 } from "./types";
 
 export let __EXECUTOR_CALLS__ = 0;
@@ -50,6 +54,147 @@ function buildHistoryId(params: {
   );
 }
 
+function digestMetaKeyForDay(dayBucket: string) {
+  // brain/{userId}/meta/{key}
+  // docId darf keine Slashes haben -> dayBucket ist "YYYY-MM-DD"
+  return `dailyDigest_v1__${dayBucket}`;
+}
+
+function extractDigestContributions(out: RunCoreOnceOutput): DailyDigestContributionV1[] {
+  const ran = (out as any)?.debug?.satellites?.ran;
+  if (!Array.isArray(ran)) return [];
+
+  const res: DailyDigestContributionV1[] = [];
+  for (const r of ran) {
+    const d = r?.digest_only;
+    if (!d || typeof d !== "object") continue;
+    // minimal shape check (defensiv)
+    if (d.version === 1 && d.satelliteId === "document-understanding.v1" && d.counts && d.docTypes) {
+      res.push(d as DailyDigestContributionV1);
+    }
+  }
+  return res;
+}
+
+function mergeDailyDigestDocs(params: {
+  prev: any | null;
+  dayBucket: string;
+  rawEventId: string;
+  contributions: DailyDigestContributionV1[];
+  now: number;
+}) {
+  const { prev, dayBucket, rawEventId, contributions, now } = params;
+
+  // ---- idempotency guard: prevent double-merge for same rawEventId
+  const prevMerged: string[] = Array.isArray(prev?.mergedRawEventIds)
+    ? prev.mergedRawEventIds.filter((x: any) => typeof x === "string")
+    : [];
+
+  if (prevMerged.includes(rawEventId)) {
+    return { next: prev, changed: false, reason: "already_merged_rawEventId" as const };
+  }
+
+  // ---- base structure (matches your console output style)
+  const base = {
+    version: 1 as const,
+    dayBucket,
+    contributionsCount: 0,
+    counts: { processedLocal: 0, blockedByTier: 0, errors: 0 },
+    docTypes: {} as Record<string, number>,
+    reasonCodes: [] as string[],
+    mergedRawEventIds: [] as string[], // bounded
+    updatedAt: now,
+  };
+
+  const prevDoc = prev && typeof prev === "object" ? prev : null;
+  const next = { ...base };
+
+  if (prevDoc) {
+    next.contributionsCount = typeof prevDoc.contributionsCount === "number" ? prevDoc.contributionsCount : 0;
+
+    const pc = prevDoc.counts && typeof prevDoc.counts === "object" ? prevDoc.counts : {};
+    next.counts.processedLocal = typeof pc.processedLocal === "number" ? pc.processedLocal : 0;
+    next.counts.blockedByTier = typeof pc.blockedByTier === "number" ? pc.blockedByTier : 0;
+    next.counts.errors = typeof pc.errors === "number" ? pc.errors : 0;
+
+    const pd = prevDoc.docTypes && typeof prevDoc.docTypes === "object" ? prevDoc.docTypes : {};
+    for (const k of Object.keys(pd)) {
+      const v = (pd as any)[k];
+      if (typeof v === "number" && Number.isFinite(v) && v > 0) next.docTypes[k] = Math.floor(v);
+    }
+
+    const pr: string[] = Array.isArray(prevDoc.reasonCodes)
+      ? prevDoc.reasonCodes.filter((x: any) => typeof x === "string" && x.trim())
+      : [];
+    next.reasonCodes = pr.slice(0, 20); // bounded
+
+    next.mergedRawEventIds = prevMerged.slice(0, 50);
+  }
+
+  // ---- merge contributions (THIS run)
+  for (const c of contributions) {
+    next.contributionsCount += 1;
+
+    const cc = (c as any)?.counts ?? {};
+
+    // MODEL A (Partition):
+    // Jede Contribution zählt genau in EINE Kategorie:
+    // errors OR blockedByTier OR processedLocal
+    const blocked =
+      typeof cc.blockedByTier === "number" &&
+      Number.isFinite(cc.blockedByTier) &&
+      cc.blockedByTier > 0;
+
+    const errored =
+      typeof cc.errors === "number" &&
+      Number.isFinite(cc.errors) &&
+      cc.errors > 0;
+
+    if (errored) {
+      next.counts.errors += 1;
+    } else if (blocked) {
+      next.counts.blockedByTier += 1;
+    } else {
+      next.counts.processedLocal += 1;
+    }
+
+    const dt = (c as any)?.docTypes ?? {};
+    if (dt && typeof dt === "object") {
+      for (const k of Object.keys(dt)) {
+        const v = (dt as any)[k];
+        if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+          next.docTypes[k] = (next.docTypes[k] ?? 0) + Math.floor(v);
+        }
+      }
+    }
+
+    const rc: string[] = Array.isArray((c as any)?.reasonCodes)
+      ? (c as any).reasonCodes.filter((x: any) => typeof x === "string" && x.trim())
+      : [];
+    for (const code of rc) {
+      if (code && !next.reasonCodes.includes(code)) next.reasonCodes.push(code);
+    }
+  }
+
+  // idempotency stamp
+  next.mergedRawEventIds = [rawEventId, ...next.mergedRawEventIds].slice(0, 50);
+
+  // bound reasonCodes
+  next.reasonCodes = next.reasonCodes.slice(0, 20);
+
+  // ---- compare for noop
+  const prevCanon = prevDoc ? { ...prevDoc } : null;
+  const nextCanon = { ...next };
+
+  // updatedAt should not trigger noop detection
+  if (prevCanon && typeof prevCanon === "object") delete (prevCanon as any).updatedAt;
+  delete (nextCanon as any).updatedAt;
+
+  const same = !!prevCanon && stableStringify(prevCanon) === stableStringify(nextCanon);
+
+  return { next, changed: !same, reason: "merged" as const };
+}
+
 // NOTE: This file is intentionally impure. It may import Firestore/admin later.
 // For now we keep it minimal and do not implement actual writes until 6.3.3 wiring.
 
@@ -75,8 +220,11 @@ export async function executeWritePlanV1(
   const wantsFacts = plan.facts.mode === "upsert" && (plan.facts.count ?? 0) > 0;
   const wantsHaltung = plan.haltung.mode === "set_state" && (plan.haltung.keys?.length ?? 0) > 0;
 
+  const wantsDailyDigest =
+  plan.dailyDigest.mode === "merge" && plan.dailyDigest.count > 0;
+
   // Minimal noop fast-path
-  if (!wantsRawEvent && !wantsFacts && !wantsHaltung) {
+  if (!wantsRawEvent && !wantsFacts && !wantsHaltung && !wantsDailyDigest) {
     return {
       wrote: false,
       reason: "noop",
@@ -86,6 +234,7 @@ export async function executeWritePlanV1(
   haltungPatched: 0,
   historyAppended: 0,
   evidenceAppended: 0,
+  dailyDigestMerged: 0,
 },
     };
   }
@@ -93,7 +242,8 @@ export async function executeWritePlanV1(
   try {
 
   // We write exactly what the plan allows. Nothing else.
-  const db = admin.firestore();
+if (!admin.apps.length) admin.initializeApp();
+const db = admin.firestore();
 const batch = db.batch();
 
   let rawEventsAppended = 0;
@@ -101,6 +251,7 @@ const batch = db.batch();
   let haltungPatched = 0;
   let historyAppended = 0;
   let evidenceAppended = 0;
+  let dailyDigestMerged = 0;
 
   if (wantsRawEvent) {
   const { rawEventId, doc } = input.out.rawEvent;
@@ -307,12 +458,49 @@ historyAppended += 1;
   haltungPatched = 1;
 }
 
+if (wantsDailyDigest) {
+    const now = Date.now();
+
+    const dayBucket = dayBucketUTC(now);
+
+    const rawEventId = String((input.out as any)?.rawEvent?.rawEventId ?? "").trim();
+
+    const contributions = extractDigestContributions(input.out);
+
+    if (rawEventId && contributions.length > 0) {
+      const key = digestMetaKeyForDay(dayBucket);
+      const ref = db
+        .collection("brain")
+        .doc(userId)
+        .collection("meta")
+        .doc(key);
+
+      const snap = await ref.get();
+      const prev = snap.exists ? snap.data() : null;
+
+      const merged = mergeDailyDigestDocs({
+        prev,
+        dayBucket,
+        rawEventId,
+        contributions,
+        now,
+      });
+
+      if (merged.changed && merged.next) {
+        // merge:true ist ok, aber wir schreiben "full doc" anyway
+        batch.set(ref, merged.next, { merge: true });
+        dailyDigestMerged = 1;
+      }
+    }
+  }
+
 const totalWrites =
   rawEventsAppended +
   factsUpserted +
   haltungPatched +
   historyAppended +
-  evidenceAppended;
+  evidenceAppended +
+  dailyDigestMerged;
 
 if (totalWrites === 0) {
   return {
@@ -324,6 +512,7 @@ if (totalWrites === 0) {
       haltungPatched: 0,
       historyAppended: 0,
       evidenceAppended: 0,
+      dailyDigestMerged: 0,
     },
   };
 }
@@ -339,6 +528,7 @@ if (totalWrites === 0) {
   haltungPatched,
   historyAppended,
   evidenceAppended,
+  dailyDigestMerged,
 },
   };
 } catch (e: any) {

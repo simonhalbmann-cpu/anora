@@ -28,12 +28,24 @@ export type RunCoreWithPersistenceOutput = RunCoreOnceOutput & {
   writePlan: CoreWritePlanV1;
 };
 
+function countDigestContributions(out: any): number {
+  const ran = out?.debug?.satellites?.ran;
+  if (!Array.isArray(ran)) return 0;
+
+  let n = 0;
+  for (const r of ran) {
+    if (r && r.digest_only && typeof r.digest_only === "object") n += 1;
+  }
+  return n;
+}
+
 export async function runCoreWithPersistence(
   input: RunCoreWithPersistenceInput
 ): Promise<RunCoreWithPersistenceOutput> {
   const dryRun = input.dryRun !== false; // default true
 
   const out = await runCoreOnce(input);
+  const digestContribCount = countDigestContributions(out);
 
   const satellitesOff =
   Array.isArray(input.extractorIds) && input.extractorIds.length === 0;
@@ -55,6 +67,11 @@ const factsPlannedCount = satellitesOff ? 0 : (out.validatedFacts?.length ?? 0);
   haltung: {
   mode: hasHaltungPatch ? "set_state" : "none",
   keys: hasHaltungPatch ? Object.keys(out.haltungDelta.patch) : [],
+},
+
+  dailyDigest: {
+  mode: digestContribCount > 0 ? "merge" : "none",
+  count: digestContribCount,
 },
 };
 

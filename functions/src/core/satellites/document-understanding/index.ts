@@ -1,6 +1,7 @@
 // functions/src/core/satellites/document-understanding/index.ts
 import type { SatelliteInput, SatelliteInsight, SatelliteOutput, SatelliteScores } from "../satelliteContract";
 import { gateProposedFacts } from "./contract";
+import { buildDailyDigestContributionV1 } from "./digest/dailyDigestPlan";
 import { gateDailyDigestPlan, type UserTier } from "./limits/freeProGates";
 import { scoreUnderstandingConfidence } from "./understanding/confidence";
 import { classifyDocType } from "./understanding/docType";
@@ -251,6 +252,11 @@ if (hasText) {
     },
   ];
 
+  const digestContribution = buildDailyDigestContributionV1({
+    tier,
+    insights,
+  });
+
   // ----------------------------
   // SCORES (numeric, bounded)
   // ----------------------------
@@ -317,20 +323,28 @@ if (hasText) {
     insights,
     hypotheses: [],
     risks: [],
-    suggestions: proposedFacts.length
-  ? [
+    suggestions: [
+      ...(proposedFacts.length
+        ? [
+            {
+              kind: "propose_facts" as const,
+              facts: proposedFacts.map((pf) => ({
+                domain: pf.domain,
+                key: pf.key,
+                value: pf.value,
+                sourceRef: pf.sourceRef,
+                meta: pf.meta,
+              })),
+            },
+          ]
+        : []),
+
+      // Phase 5.1: Digest material (DATA ONLY)
       {
-        kind: "propose_facts",
-        facts: proposedFacts.map((pf) => ({
-          domain: pf.domain,
-          key: pf.key,
-          value: pf.value,
-          sourceRef: pf.sourceRef,
-          meta: pf.meta,
-        })),
+        kind: "digest_only" as const,
+        data: digestContribution,
       },
-    ]
-  : [],
+    ],
     scores,
     debug,
   };

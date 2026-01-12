@@ -8,23 +8,11 @@ export type PersistenceCountsV1 = {
   // A4.5
   historyAppended: number;
   evidenceAppended: number;
+
+  // Phase 5.2
+  dailyDigestMerged: number;
 };
 
-export type CoreWritePlanV1 = {
-  version: 1;
-
-  rawEvent: "none" | "append";
-
-  facts: {
-    mode: "none" | "upsert";
-    count: number;
-  };
-
-  haltung: {
-  mode: "none" | "set_state";
-  keys: string[]; // optional: welche Felder sich geändert haben
-};
-};
 
 export type PersistenceStatusV1 =
   | { dryRun: true; wrote: false; reason: "dry_run" }
@@ -45,3 +33,25 @@ export type PersistenceResultV1 =
       counts: PersistenceCountsV1;
     }
   | { wrote: false; reason: "failed"; error: { message: string } };
+
+export type CoreWritePlanV1 = {
+  version: 1;
+
+  rawEvent: "none" | "append";
+
+  facts: {
+    mode: "none" | "upsert";
+    count: number;
+  };
+
+  haltung: {
+    mode: "none" | "set_state";
+    keys: string[];
+  };
+
+  // Phase 5.2
+  dailyDigest: {
+    mode: "none" | "merge";
+    count: number; // wie viele Contributions in diesem Run
+  };
+};

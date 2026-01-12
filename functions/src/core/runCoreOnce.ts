@@ -13,6 +13,8 @@ import { toEntityDomain } from "./entities/types";
 import { dayBucketUTC, sha256 } from "./rawEvents/hash";
 import type { RawEventDoc } from "./rawEvents/types";
 
+import { bootstrapSatellites } from "./satellites/registryBootstrap";
+
 import { buildFactId } from "./facts/factId";
 import { normalizeFactValueByLocale } from "./facts/locale";
 import { normalizeFactKey } from "./facts/semantic";
@@ -35,6 +37,9 @@ import { stableStringify } from "./utils/stableStringify";
 
 import { getSatellite } from "./satellites/registry";
 import type { SatelliteInput, SatelliteOutput } from "./satellites/satelliteContract";
+
+import { aggregateDailyDigestV1 } from "./meta/dailyDigestAggregate";
+import type { DailyDigestContributionV1 } from "./satellites/document-understanding/digest/dailyDigestPlan";
 
 // -----------------------
 // Types
@@ -320,6 +325,10 @@ function applyHaltungPatchPure(before: CoreHaltungV1, patch: Partial<Omit<CoreHa
 
 export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceOutput> {
   // 0) Normalize input
+
+  // Ensure satellites are registered (pure bootstrap)
+  bootstrapSatellites();
+  
   const userId = String(input?.userId ?? "").trim();
   if (!userId) throw new Error("runCoreOnce: userId missing");
   
@@ -464,6 +473,35 @@ warnings.push(...w);
       }
     }
   }
+
+// ----------------------------
+  // Phase 5.2: Collect digest_only contributions (DATA ONLY, PURE)
+  // ----------------------------
+  const digestContribs: DailyDigestContributionV1[] = [];
+
+  for (const sOut of satelliteOutputs) {
+    if (!sOut || (sOut as any).ok !== true) continue;
+
+    const suggestions = Array.isArray((sOut as any).suggestions) ? (sOut as any).suggestions : [];
+    for (const sug of suggestions) {
+      if (!sug || sug.kind !== "digest_only") continue;
+
+      const data = (sug as any).data;
+      // Minimal shape gate (conservative)
+      if (!data || (data as any).version !== 1) continue;
+      if (typeof (data as any).satelliteId !== "string") continue;
+
+      // For now: only accept document-understanding.v1 contributions
+      if ((data as any).satelliteId !== "document-understanding.v1") continue;
+
+      digestContribs.push(data as DailyDigestContributionV1);
+    }
+  }
+
+  const dailyDigestAgg =
+    digestContribs.length > 0
+      ? aggregateDailyDigestV1({ dayBucket: rawEventDoc.dayBucket, contributions: digestContribs })
+      : null;
 
   // Map satellite propose_facts -> FactInput (still goes through strict validation below)
   const proposedFacts: FactInput[] = [];
@@ -723,24 +761,36 @@ for (const f of finalFacts) {
     satellites: {
       requested: satelliteIds,
       ran: satelliteOutputs
-        .map((o: any) => {
-  const insights = Array.isArray(o?.insights) ? o.insights : [];
+  .map((o: any) => {
+    const insights = Array.isArray(o?.insights) ? o.insights : [];
+    const suggestions = Array.isArray(o?.suggestions) ? o.suggestions : [];
 
-  const digestGate =
-    insights.find((i: any) => i?.code === "digest_plan_gate")?.data ?? null;
+    const digestGate =
+      insights.find((i: any) => i?.code === "digest_plan_gate")?.data ?? null;
 
-  return {
-    satelliteId: o?.satelliteId,
-    ok: o?.ok === true,
-    insightsCount: insights.length,
-    suggestionsKinds: Array.isArray(o?.suggestions)
-      ? o.suggestions.map((s: any) => s?.kind).filter(Boolean).slice(0, 10)
-      : [],
-    digest_plan_gate: digestGate,
-  };
-})
-        .slice(0, 5),
+    const digestOnly =
+      suggestions.find((s: any) => s?.kind === "digest_only")?.data ?? null;
+
+    return {
+      satelliteId: o?.satelliteId,
+      ok: o?.ok === true,
+      insightsCount: insights.length,
+      suggestionsKinds: suggestions
+        .map((s: any) => s?.kind)
+        .filter(Boolean)
+        .slice(0, 10),
+
+      digest_plan_gate: digestGate,
+
+      // Phase 5.1: DailyDigestContribution sichtbar machen (bounded, data-only)
+      digest_only: digestOnly,
+    };
+  })
+  .slice(0, 5),
+        
     },
+
+    dailyDigest: dailyDigestAgg,
 
     conflicts: {
   count: conflictEvents.length,

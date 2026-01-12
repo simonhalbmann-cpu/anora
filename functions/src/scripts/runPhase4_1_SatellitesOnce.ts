@@ -12,7 +12,7 @@ async function main() {
     "Mietvertrag: Die Kaltmiete beträgt 1200 EUR. Der Mieter ist Max Mustermann. Frist: 31.12.2025.";
 
 // Test-Tier toggeln
-  const testTier: "free" | "pro" = "pro"; // <- hier auf "free" oder "pro" stellen
+  const testTier: "free" | "pro" = "free"; // <- hier auf "free" oder "pro" stellen
 
   const out = await runCoreOnce({
     userId,
@@ -43,6 +43,11 @@ async function main() {
     JSON.stringify(out?.debug?.satellites ?? null, null, 2)
   );
 
+  console.log(
+  "dailyDigest:",
+  JSON.stringify((out as any)?.debug?.dailyDigest ?? null, null, 2)
+);
+
   // ----------------------------
 // NEW: digest_plan_gate aus runCoreOnce debug ziehen
 // (runCoreOnce speichert hier KEIN komplettes SatelliteOutput, sondern nur Summary + digest_plan_gate)
@@ -56,6 +61,9 @@ const du = ran.find((s: any) => s?.satelliteId === "document-understanding.v1") 
 const digestGate = du?.digest_plan_gate ?? null;
 
 console.log("digest_plan_gate:", JSON.stringify(digestGate, null, 2));
+
+const digestOnly = du?.digest_only ?? null;
+console.log("digest_only:", JSON.stringify(digestOnly, null, 2));
 
   console.log(
     "warnings:",
