@@ -1,14 +1,8 @@
 // src/services/firebase.ts
-
-import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
 import { initializeApp } from "firebase/app";
-import {
-  getReactNativePersistence,
-  initializeAuth,
-} from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { connectAuthEmulator, getAuth } from "firebase/auth";
+import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
 
-// 🔴 HIER deine NEUE Config aus dem Projekt "anoraapp-ai" einfügen
 const firebaseConfig = {
   apiKey: "AIzaSyDyJIUYVaO3RpWVIN9BLS8diNrcdDzuHD4",
   authDomain: "anoraapp-ai.firebaseapp.com",
@@ -20,9 +14,25 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
-// persistenter Login
-export const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(ReactNativeAsyncStorage),
-});
-
+export const auth = getAuth(app);
 export const db = getFirestore(app);
+
+if (__DEV__) {
+  const HOST = "192.168.178.141";
+
+  // Auth Emulator
+  try {
+    connectAuthEmulator(auth, `http://${HOST}:9099`, { disableWarnings: true });
+    console.log(`🔥 Auth Emulator verbunden (${HOST}:9099)`);
+  } catch (e) {
+    console.log("Auth Emulator vermutlich schon verbunden");
+  }
+
+  // Firestore Emulator
+  try {
+    connectFirestoreEmulator(db, HOST, 8080);
+    console.log(`🔥 Firestore Emulator verbunden (${HOST}:8080)`);
+  } catch (e) {
+    console.log("Firestore Emulator vermutlich schon verbunden");
+  }
+}

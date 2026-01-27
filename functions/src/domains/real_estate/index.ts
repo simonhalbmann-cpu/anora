@@ -38,7 +38,7 @@ export type RealEstateIngestDeps = {
   }) => Promise<string>;
 
   // robustes JSON-Parsing (dein existing Helper, aber injected)
-  safeParseAssistantJson: (raw: string) => any;
+  safeParseAssistantJson: (raw: string) => { ok: boolean; value?: any; error?: string; jsonCandidate?: string };
 
   // persistence + context update (existing core funcs, aber injected)
   saveNewFacts: (userId: string, facts: any[]) => Promise<void>;
@@ -94,14 +94,30 @@ Dokumenttext (Deutsch oder gemischt):
 
       const parsed = deps.safeParseAssistantJson(raw);
 
-      if (!parsed || !Array.isArray(parsed)) {
-        deps.logger.error("ingestDocumentText_invalid_ai_output", { raw });
-        throw new Error("KI-Antwort war kein gültiges JSON-Array.");
-      }
+if (!parsed?.ok) {
+  deps.logger.error("ingestDocumentText_parse_failed", {
+    error: parsed?.error ?? "unknown",
+    jsonCandidate: parsed?.jsonCandidate ?? "",
+    rawPreview: raw.slice(0, 500),
+  });
+  throw new Error("KI-Antwort war kein gültiges JSON.");
+}
+
+if (!Array.isArray(parsed.value)) {
+  deps.logger.error("ingestDocumentText_invalid_ai_output", {
+    jsonCandidate: parsed.jsonCandidate,
+    parsedType: typeof parsed.value,
+    isArray: Array.isArray(parsed.value),
+    rawPreview: raw.slice(0, 500),
+  });
+  throw new Error("KI-Antwort war kein gültiges JSON-Array.");
+}
+
+const arr = parsed.value;
 
       const newFacts = validateIngestFacts(
         ctx.userId,
-        parsed,
+        arr,
         { filename: req.meta.filename, source: req.meta.source },
         { maxFacts: 50 }
       );

@@ -50,6 +50,23 @@ export async function runCoreWithPersistence(
   const satellitesOff =
   Array.isArray(input.extractorIds) && input.extractorIds.length === 0;
 
+  // HARD CONTRACT: satellites OFF => out must behave as if no extractors ran
+if (satellitesOff) {
+  // validatedFacts must be empty for Phase 2 golden test + contract clarity
+  (out as any).validatedFacts = [];
+
+  // optional: if runCoreOnce tracks extractor runs in `ran`, clear it too
+  if (Array.isArray((out as any).ran)) {
+    (out as any).ran = [];
+  }
+
+  // keep debug consistent with contract
+if (out && typeof (out as any).debug === "object" && (out as any).debug) {
+  (out as any).debug.validatedFactsCount = 0;
+  (out as any).debug.extractedFactsCount = 0;
+}
+}
+
 // HARD CONTRACT: satellites OFF => NEVER plan fact writes
 const factsPlannedCount = satellitesOff ? 0 : (out.validatedFacts?.length ?? 0);
   const hasHaltungPatch = hasAnyKeys(out.haltungDelta?.patch);

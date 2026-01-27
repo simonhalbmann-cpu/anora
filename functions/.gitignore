@@ -22,3 +22,7 @@ letzte
 normale
 q.includes(k))
 {
+
+# Secrets
+.env
+.env.*

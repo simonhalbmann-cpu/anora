@@ -9,14 +9,26 @@
   },
   "emulators": {
     "functions": {
+      "host": "0.0.0.0",
       "port": 5001
     },
     "firestore": {
+      "host": "0.0.0.0",
       "port": 8080
     },
     "ui": {
-      "enabled": true
+      "enabled": true,
+      "host": "0.0.0.0",
+      "port": 4000
     },
-    "singleProjectMode": true
+    "hub": {
+      "host": "0.0.0.0",
+      "port": 4400
+    },
+    "singleProjectMode": true,
+    "auth": {
+  "host": "0.0.0.0",
+  "port": 9099
+}
   }
 }

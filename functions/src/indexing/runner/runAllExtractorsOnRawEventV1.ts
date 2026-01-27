@@ -99,6 +99,13 @@ await markRawEventRunStart({
   rawEventId,
   runner: "runAllExtractorsOnRawEventV1",
   extractorIds,
+
+  // audit (optional): kommt vom RawEvent (falls gesetzt)
+  model: typeof (raw as any)?.meta?.llm?.model === "string" ? String((raw as any).meta.llm.model) : undefined,
+  promptVersion:
+    typeof (raw as any)?.meta?.llm?.promptVersion === "string"
+      ? String((raw as any).meta.llm.promptVersion)
+      : undefined,
 });
 
   try {
@@ -327,6 +334,13 @@ await markRawEventRunDone({
     perExtractor,
     tookMs: Date.now() - tAll,
   },
+
+  // audit (optional): kommt vom RawEvent (falls gesetzt)
+  model: typeof (raw as any)?.meta?.llm?.model === "string" ? String((raw as any).meta.llm.model) : undefined,
+  promptVersion:
+    typeof (raw as any)?.meta?.llm?.promptVersion === "string"
+      ? String((raw as any).meta.llm.promptVersion)
+      : undefined,
 });
 
 // optional: stage “done” (Debug/UX)

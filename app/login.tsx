@@ -48,23 +48,23 @@ export default function LoginScreen() {
       );
       const user = cred.user;
 
-      // 2) Versuchen, Vorname aus Firestore zu holen
-      let firstName = "";
+      // 2) Versuchen, Vorname aus Firestore zu holen (ANORA: brain/{uid}/meta/profile)
+let firstName = "";
 
-      try {
-        const userRef = doc(db, "users", user.uid);
-        const snap = await getDoc(userRef);
+try {
+  const profileRef = doc(db, "profiles", user.uid);
+  const snap = await getDoc(profileRef);
 
-        if (snap.exists()) {
-          const data = snap.data() as any;
-          firstName =
-            (data.firstName as string) ||
-            (data.firstname as string) ||
-            "";
-        }
-      } catch (e) {
-        console.log("Fehler beim Laden von firstName aus Firestore:", e);
-      }
+  if (snap.exists()) {
+    const data = snap.data() as any;
+    firstName =
+      (data.firstName as string) ||
+      (data.firstname as string) ||
+      "";
+  }
+} catch (e) {
+  console.log("Fehler beim Laden von firstName aus Firestore:", e);
+}
 
       // 3) Fallback: E-Mail-Localpart
       if (!firstName && user.email) {

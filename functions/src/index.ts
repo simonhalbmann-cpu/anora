@@ -11,7 +11,8 @@ import { onRequest } from "firebase-functions/v2/https";
 import { getOpenAI, safeParseAssistantJson } from "./core/bridge";
 import { haltungRef } from "./core/persistence/firestoreExecutorV1";
 
-import { createApiHandler } from "./entry/apiHandler";
+import type { FactDoc } from "./core/facts/types";
+import { createApiHandler } from "./entry/createApiHandler";
 import { createDigestHandler } from "./entry/digestHandler";
 import { createIndexingHandler } from "./entry/indexingHandler";
 
@@ -29,6 +30,18 @@ async function readHaltung(userId: string) {
   return snap.exists ? (snap.data() as any) : undefined;
 }
 
+async function readFacts(userId: string): Promise<FactDoc[]> {
+  const col = admin.firestore().collection("brain").doc(userId).collection("facts");
+
+  // Minimal: hol eine überschaubare Menge, filter aktiv-only im Code:
+  const snap = await col.limit(200).get();
+
+  const docs = snap.docs.map((d) => d.data() as any);
+
+  // aktiv-only: isSuperseded !== true (false oder undefined gilt als aktiv)
+  return docs.filter((x) => x && x.isSuperseded !== true) as FactDoc[];
+}
+
 // API Handler (LLM / Haltung)
 const apiHandler = createApiHandler({
   logger: functionsLogger,
@@ -36,6 +49,7 @@ const apiHandler = createApiHandler({
   safeParseAssistantJson,
   model: MODEL,
   readHaltung,
+  readFacts,
 });
 
 // Indexing Handler (rein, ohne LLM)

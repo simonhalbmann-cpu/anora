@@ -1,2 +1,3 @@
+// src/entry/apiHandler.ts
 export { createApiHandler } from "./createApiHandler";
-export type { ApiHandlerDeps } from "./createApiHandler";
+

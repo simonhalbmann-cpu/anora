@@ -4,7 +4,7 @@ import admin from "firebase-admin";
 
 import type { MetaContextDoc } from "../core/meta/contextStore";
 import { getMetaContext } from "../core/meta/contextStore";
-import { dayBucketUTC } from "../core/rawEvents/hash";
+import { dayBucketInTimeZone, dayBucketUTC } from "../core/rawEvents/hash";
 
 type LoggerLike = {
   error: (message: string, meta?: any) => void;
@@ -68,6 +68,10 @@ export function createDigestHandler(deps: { logger: LoggerLike }) {
 
       const userId = asString(body?.userId).trim();
       const days = clampInt(body?.days, 7);
+      const timeZone =
+      typeof body?.timeZone === "string" && body.timeZone.trim()
+      ? body.timeZone.trim()
+      : "UTC";
 
       if (!userId) {
         res.status(400).json({ ok: false, error: "Missing userId" });
@@ -79,7 +83,15 @@ export function createDigestHandler(deps: { logger: LoggerLike }) {
       const db = admin.firestore();
 
       const now = Date.now();
-      const dayBuckets = listLastDayBucketsUTC(days, now);
+      const dayBuckets: string[] = [];
+for (let i = 0; i < Math.max(1, Math.min(31, days)); i++) {
+  const ms = now - i * 24 * 60 * 60 * 1000;
+  dayBuckets.push(
+    timeZone === "UTC"
+      ? dayBucketUTC(ms)
+      : dayBucketInTimeZone(ms, timeZone)
+  );
+}
 
       const perDay: Array<{
         dayBucket: string;

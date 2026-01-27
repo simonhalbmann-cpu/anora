@@ -41,6 +41,10 @@ import type { SatelliteInput, SatelliteOutput } from "./satellites/satelliteCont
 import { aggregateDailyDigestV1 } from "./meta/dailyDigestAggregate";
 import type { DailyDigestContributionV1 } from "./satellites/document-understanding/digest/dailyDigestPlan";
 
+import {
+  DOCUMENT_UNDERSTANDING_SATELLITE_ID,
+} from "./satellites/document-understanding";
+
 // -----------------------
 // Types
 // -----------------------
@@ -279,6 +283,7 @@ if (!isSystem && rawKey && key !== rawKey) {
       ? String((f as any).factId).trim()
       : buildFactId({
           entityId,
+          domain,
           key,
           value: isLatest ? "__latest__" : value,
           options: { validityWindow: validity },
@@ -347,7 +352,7 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
   const hBefore = normalizeHaltungPure(input?.state?.haltung);
 
   // 1) Build in-memory RawEvent (deterministic)
-  const timestamp = 0; // strict determinism in Phase 6.1
+  const timestamp = Date.now();
   const ingestHash = sha256(`${userId}::${locale}::${text}`);
   const rawEventId = sha256(`rawEvent::${ingestHash}`);
 
@@ -397,18 +402,8 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
       // Phase 1 strict: reject invalid facts (same rule-shape as existing runner)
 const cleaned = facts.filter((f: any) => validateFactInputV1Pure(f).ok);
 
-// Phase 4.2: chat-input facts are user claims (core rule)
-const userClaimFacts = cleaned.map((f: any) => ({
-  ...f,
-  meta: {
-    ...(f?.meta && typeof f.meta === "object" ? f.meta : {}),
-    source: (f?.meta && typeof f.meta === "object" && typeof f.meta.source === "string")
-      ? f.meta.source
-      : "user_claim",
-  },
-}));
-
-extractedFacts.push(...userClaimFacts);
+// Extractor output stays extractor output (NOT a user claim)
+extractedFacts.push(...cleaned);
 warnings.push(...w);
 
       perExtractor.push({
@@ -422,10 +417,12 @@ warnings.push(...w);
     }
   }
 
-// 2.5) Satellites (pure) — Phase 4.1: collect proposed facts (no writes)
-  const satelliteIds = Array.isArray(input?.state?.satelliteIds)
+// 2.5) Satellites (pure)
+// Document Understanding ist STANDARD für Dokumente
+const satelliteIds = Array.isArray(input?.state?.satelliteIds)
   ? input.state!.satelliteIds
-  : []; // default OFF
+  : [DOCUMENT_UNDERSTANDING_SATELLITE_ID];
+  
   const satelliteOutputs: SatelliteOutput[] = [];
 
   if (satelliteIds.length > 0) {
@@ -467,6 +464,41 @@ warnings.push(...w);
 
       try {
         const outSat = await def.run({ ...baseInput, satelliteId: satId });
+
+// PHASE 7.2 — Satellite Contract Enforcement (runtime guard)
+
+if (!outSat || typeof outSat !== "object") {
+  throw new Error(`SATELLITE_CONTRACT: ${satId} returned invalid output (not an object)`);
+}
+
+if (outSat.ok !== true && outSat.ok !== false) {
+  throw new Error(`SATELLITE_CONTRACT: ${satId} missing ok flag`);
+}
+
+if (outSat.ok === true) {
+  if (!Array.isArray(outSat.suggestions)) {
+    throw new Error(`SATELLITE_CONTRACT: ${satId} suggestions must be array`);
+  }
+
+  for (const s of outSat.suggestions) {
+    if (!s || typeof s !== "object" || typeof (s as any).kind !== "string") {
+      throw new Error(`SATELLITE_CONTRACT: ${satId} invalid suggestion entry`);
+    }
+
+    if (s.kind === "propose_facts") {
+      if (!Array.isArray((s as any).facts)) {
+        throw new Error(`SATELLITE_CONTRACT: ${satId} propose_facts requires facts[]`);
+      }
+    }
+
+    if (s.kind === "needs_user_confirmation") {
+      if (typeof (s as any).questionCode !== "string") {
+        throw new Error(`SATELLITE_CONTRACT: ${satId} needs_user_confirmation requires questionCode`);
+      }
+    }
+  }
+}
+
         satelliteOutputs.push(outSat);
       } catch (e) {
         warnings.push(`satellite_failed:${satId}:${String(e)}`);
@@ -640,7 +672,9 @@ const validatedFactsWithConflicts = validatedFacts.map((f: any) => {
   const u = userClaimByEntityKey.get(k);
   if (!u) return f;
 
-  const sameValue = stableStringify(u.value) === stableStringify(f.value);
+  const sameValue =
+  stableStringify(u.value) ===
+  stableStringify(f.value);
   if (sameValue) return f;
 
   // mark document/non-user fact as conflicted

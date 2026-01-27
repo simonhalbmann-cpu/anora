@@ -15,6 +15,52 @@ type LoggerLike = {
   warn?: (message: string, meta?: any) => void;
 };
 
+function isEmulator(): boolean {
+  const inEmulator = process.env.FUNCTIONS_EMULATOR === "true";
+  const forcedOff = process.env.DEV_FORCE_DISABLE === "true";
+  return inEmulator && !forcedOff;
+}
+
+function requireIndexingAccessOr403(req: Request, res: Response): boolean {
+  try {
+    // 1) Emulator: erlaubt (außer forced-off)
+    if (isEmulator()) return true;
+
+    // 2) Prod: Secret muss gesetzt sein
+    const secret = process.env.INDEXING_API_SECRET || process.env.DEV_API_SECRET;
+    if (!secret) {
+      res.status(500).json({ ok: false, error: "INDEXING_API_SECRET/DEV_API_SECRET not set" });
+      return false;
+    }
+
+    // 3) Token nur über Header oder Query (Body ist unsicher/unklar)
+    const headerVal = req.header("x-indexing-secret");
+    const headerToken = typeof headerVal === "string" ? headerVal : "";
+
+    const queryAny = req.query as any;
+    const queryToken =
+      typeof queryAny?.indexingSecret === "string"
+        ? String(queryAny.indexingSecret)
+        : "";
+
+    const token = headerToken || queryToken;
+
+    if (!token || token !== secret) {
+      res.status(403).json({ ok: false, error: "Forbidden" });
+      return false;
+    }
+
+    return true;
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      error: "Indexing guard failed",
+      detail: String(e),
+    });
+    return false;
+  }
+}
+
 export function createIndexingHandler(deps: { logger: LoggerLike }) {
   const { logger } = deps;
 
@@ -24,6 +70,8 @@ export function createIndexingHandler(deps: { logger: LoggerLike }) {
         res.status(405).json({ ok: false, error: "Only POST allowed" });
         return;
       }
+
+      if (!requireIndexingAccessOr403(req, res)) return;
 
       let body: any = req.body;
       if (typeof body === "string") {

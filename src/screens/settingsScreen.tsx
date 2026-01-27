@@ -81,7 +81,7 @@ export default function SettingsScreen() {
 
     try {
       setTopicsLoading(true);
-      const res = await apiGetPresenceTopics(user.uid);
+      const res = await apiGetPresenceTopics();
       setTopics(res.topics || {});
     } catch (e) {
       console.log("loadPresenceTopics error", e);
@@ -181,7 +181,7 @@ export default function SettingsScreen() {
           onPress: async () => {
             try {
               setLoading("presenceOn");
-              await apiSetPresenceEnabled(userId, true);
+              await apiSetPresenceEnabled(true);
               Alert.alert("Okay", "Presence ist für dich jetzt aktiviert.");
             } catch (e) {
               console.log("enablePresence error", e);
@@ -213,7 +213,7 @@ export default function SettingsScreen() {
           onPress: async () => {
             try {
               setLoading("presenceOff");
-              await apiSetPresenceEnabled(userId, false);
+              await apiSetPresenceEnabled(false);
               Alert.alert("Okay", "Presence ist für dich jetzt deaktiviert.");
             } catch (e) {
               console.log("disablePresence error", e);
@@ -238,15 +238,15 @@ const handleTogglePresenceTopic = (topic: PresenceTopicKey) => {
     const current = topics?.[topic];
 
     const isMuted =
-      current &&
-      typeof current.blockedUntil === "number" &&
-      current.blockedUntil > now;
+  !!current &&
+  typeof current.lastDisabledAt === "number" &&
+  current.lastDisabledAt > 0;
 
     const nextMuted = !isMuted;
 
     setTopicActionKey(topic);
 
-    apiSetPresenceTopicMuted(userId, topic, nextMuted)
+    apiSetPresenceTopicMuted(topic, nextMuted)
       .then((res) => {
         setTopics(res.topics || {});
       })
@@ -376,9 +376,9 @@ const handleTogglePresenceTopic = (topic: PresenceTopicKey) => {
         const now = Date.now();
 
         const isMuted =
-          !!topicState &&
-          typeof topicState.blockedUntil === "number" &&
-          topicState.blockedUntil > now;
+  !!topicState &&
+  typeof topicState.lastDisabledAt === "number" &&
+  topicState.lastDisabledAt > 0;
 
         return (
           <Pressable

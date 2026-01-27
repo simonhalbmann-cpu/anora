@@ -7,15 +7,19 @@ import type { FactKey, FactValue, ValidityWindow } from "./types";
 
 type Options = {
   validityWindow?: ValidityWindow;
+
+  // 🔧 MINIMAL FIX: Domain in FactId erzwingen (verhindert latest-Kollisionen)
+  domain?: string;
 };
 
 export function buildFactId(params: {
   entityId: string;
+  domain: string;          // << NEU: domain muss rein
   key: FactKey;
   value: FactValue;
   options?: Options;
 }): string {
-  const { entityId, key, value, options } = params;
+  const { entityId, domain, key, value, options } = params;
 
   const normalizedValue = stableStringify(value);
 
@@ -25,8 +29,8 @@ export function buildFactId(params: {
     to: typeof validity.to === "number" ? validity.to : null,
   });
 
-  // “contract” für die ID: entityId + key + normalizedValue + validityWindow
-  const material = `${entityId}::${key}::${normalizedValue}::${validityNorm}`;
+  // contract: entityId + domain + key + value + validity
+  const material = `${entityId}::${domain}::${key}::${normalizedValue}::${validityNorm}`;
 
   return sha256Hex(material);
 }

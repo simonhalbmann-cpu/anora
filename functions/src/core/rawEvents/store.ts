@@ -40,8 +40,12 @@ export async function markRawEventRunStart(opts: {
   rawEventId: string;
   runner: string; // z.B. "runAllExtractorsOnRawEventV1"
   extractorIds?: string[];
+
+  // audit (optional)
+  model?: string;
+  promptVersion?: string;
 }) {
-  const { userId, rawEventId, runner, extractorIds } = opts;
+  const { userId, rawEventId, runner, extractorIds, model, promptVersion } = opts;
 
   await rawEventsCol(userId).doc(rawEventId).set(
     {
@@ -51,6 +55,10 @@ export async function markRawEventRunStart(opts: {
           runner,
           extractorIds: Array.isArray(extractorIds) ? extractorIds : [],
           startedAt: Date.now(),
+
+          ...(model || promptVersion
+            ? { prompt: { model: model ?? null, version: promptVersion ?? null } }
+            : {}),
         },
       },
     } as any,
@@ -63,8 +71,12 @@ export async function markRawEventRunDone(opts: {
   rawEventId: string;
   runner: string;
   stats: Record<string, any>;
+
+  // audit (optional)
+  model?: string;
+  promptVersion?: string;
 }) {
-  const { userId, rawEventId, runner, stats } = opts;
+  const { userId, rawEventId, runner, stats, model, promptVersion } = opts;
 
   await rawEventsCol(userId).doc(rawEventId).set(
     {
@@ -74,6 +86,10 @@ export async function markRawEventRunDone(opts: {
           runner,
           finishedAt: Date.now(),
           stats,
+
+          ...(model || promptVersion
+            ? { prompt: { model: model ?? null, version: promptVersion ?? null } }
+            : {}),
         },
       },
     } as any,

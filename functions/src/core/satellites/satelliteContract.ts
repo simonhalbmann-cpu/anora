@@ -153,3 +153,74 @@ export type Satellite = {
   version: 1;
   analyze: (input: SatelliteInput) => Promise<SatelliteOutput>;
 };
+
+// --------------------------------------------------
+// PHASE 7.2 — Contract Enforcement (Core-side)
+// --------------------------------------------------
+
+export type ContractViolation = {
+  code: string;
+  message: string;
+  path?: string;
+};
+
+export function validateSatelliteProposedFacts(
+  satelliteId: string,
+  facts: Array<{
+    domain?: any;
+    key?: any;
+    value?: any;
+    sourceRef?: any;
+    meta?: Record<string, any>;
+  }>
+): ContractViolation[] {
+  const violations: ContractViolation[] = [];
+
+  facts.forEach((f, index) => {
+    const p = `facts[${index}]`;
+
+    if (!f.domain || typeof f.domain !== "string") {
+      violations.push({
+        code: "missing_domain",
+        message: "Fact.domain must be a non-empty string",
+        path: `${p}.domain`,
+      });
+    }
+
+    if (!f.key || typeof f.key !== "string") {
+      violations.push({
+        code: "missing_key",
+        message: "Fact.key must be a non-empty string",
+        path: `${p}.key`,
+      });
+    }
+
+    if (f.value === undefined) {
+      violations.push({
+        code: "missing_value",
+        message: "Fact.value must be defined",
+        path: `${p}.value`,
+      });
+    }
+
+    if (!f.sourceRef || typeof f.sourceRef !== "string") {
+      violations.push({
+        code: "missing_sourceRef",
+        message: "Fact.sourceRef must be a string",
+        path: `${p}.sourceRef`,
+      });
+    }
+
+    if (f.meta && typeof f.meta === "object") {
+      if ("isSuperseded" in f.meta || "winner" in f.meta) {
+        violations.push({
+          code: "forbidden_meta_field",
+          message: "Satellite must not set resolution fields",
+          path: `${p}.meta`,
+        });
+      }
+    }
+  });
+
+  return violations;
+}

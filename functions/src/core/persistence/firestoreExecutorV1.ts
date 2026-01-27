@@ -13,7 +13,8 @@ function getDb() {
 }
 
 export function coreUserRoot(userId: string) {
-  return getDb().collection("core").doc(userId);
+  // Single Source of Truth: brain/{userId}/...
+  return getDb().collection("brain").doc(userId);
 }
 
 export function rawEventRef(userId: string, rawEventId: string) {

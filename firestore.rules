@@ -2,85 +2,38 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // --------------------------------------------------
-    // Hilfsfunktionen
-    // --------------------------------------------------
-
-    // Ist ein User eingeloggt?
     function isSignedIn() {
       return request.auth != null && request.auth.uid != null;
     }
 
-    // Greift der eingeloggte User auf sein eigenes brain/{userId} zu?
-    function isOwnBrain(userId) {
+    function isOwn(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    // --------------------------------------------------
-    // 1) brain – Zentrales Benutzer-Wissen
-    //
-    // Struktur:
-    // brain/{userId}
-    //   ├─ facts/{factId}           → Fakten (Wissen der KI)
-    //   ├─ meta/{metaId}            → Kontexte, Personality, Settings
-    //   └─ presenceEvents/{eventId} → Presence-Karten / Nudges
-    //
-    // WICHTIG:
-    // - Client darf NUR seine eigenen Daten lesen/schreiben,
-    //   und auch nur in eng begrenzten Bereichen.
-    // - Schreiben in meta + presenceEvents erfolgt NUR über Cloud Functions
-    //   (Admin SDK), NICHT direkt vom Client.
-    // --------------------------------------------------
-
-    // Root-Dokument von brain – direkt vom Client nicht nutzbar
     match /brain/{userId} {
-      allow read, write: if false;
+      allow read: if isOwn(userId);
+      allow write: if false;
     }
 
-    // 1.1 Fakten: brain/{userId}/facts/{factId}
-    //
-    // - Client darf eigene Facts lesen und schreiben.
-    // - andere Nutzer haben keinen Zugriff.
     match /brain/{userId}/facts/{factId} {
-      allow read, write: if isOwnBrain(userId);
+      allow read, write: if isOwn(userId);
     }
 
-    // 1.2 Meta: brain/{userId}/meta/{metaId}
-    //
-    // - Client darf eigenen Meta-Bereich LESEN
-    //   (z.B. für Debug-Ansichten oder spätere Profile).
-    // - Schreiben ist vom Client NIE erlaubt.
-    //   → Kontexte, Personality etc. werden nur über Cloud Functions verändert.
     match /brain/{userId}/meta/{metaId} {
-      allow read: if isOwnBrain(userId);
+      allow read: if isOwn(userId);
       allow write: if false;
     }
 
-    // 1.3 Presence-Events: brain/{userId}/presenceEvents/{eventId}
-    //
-    // - Client darf eigene Presence-Events lesen (für UI-Karten).
-    // - Erzeugt & aktualisiert werden diese ausschließlich von den
-    //   Cloud Functions (Admin SDK) → kein direkter Schreibzugriff.
     match /brain/{userId}/presenceEvents/{eventId} {
-      allow read: if isOwnBrain(userId);
+      allow read: if isOwn(userId);
       allow write: if false;
     }
 
-    // 1.4 Alle anderen Subcollections unter brain/{userId}:
-    //
-    // - Standardmäßig KOMPLETT dicht.
-    // - Wenn du später z.B. "tasks", "logs" o.ä. hinzufügst,
-    //   musst du hier explizit Regeln ergänzen.
-    match /brain/{userId}/{subcollection}/{docId} {
-      allow read, write: if false;
+    match /profiles/{userId} {
+      allow read, create, update: if isOwn(userId);
+      allow delete: if false;
     }
 
-    // --------------------------------------------------
-    // 2) Fallback – ALLES andere ist verboten
-    //
-    // - Verhindert, dass aus Versehen irgendwo eine offene
-    //   Collection ohne Regeln bleibt.
-    // --------------------------------------------------
     match /{document=**} {
       allow read, write: if false;
     }

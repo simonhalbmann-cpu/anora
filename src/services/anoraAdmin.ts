@@ -1,20 +1,29 @@
 // src/services/anoraAdmin.ts
 
-// Für Emulator im lokalen Netzwerk:
+import { auth } from "./firebase";
+
 export const FUNCTIONS_BASE_URL =
-  "http://192.168.178.141:5001/anoraapp-ai/us-central1";
+  "http://192.168.178.141:5001/anoraapp-ai/us-central1/api";
 
 
 // Für Emulator (falls nötig):
 // const FUNCTIONS_BASE_URL = "http://127.0.0.1:5001/<project-id>/<region>";
 
-async function postJson(path: string, body: any) {
+export async function postJsonAuthed(path: string, body: any) {
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error("Not authenticated: no current user");
+  }
+
+  const idToken = await user.getIdToken();
+
   const res = await fetch(`${FUNCTIONS_BASE_URL}/${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body ?? {}),
   });
 
   if (!res.ok) {
@@ -24,6 +33,9 @@ async function postJson(path: string, body: any) {
     );
   }
 
+  // 204 kann bei manchen Endpoints vorkommen
+  if (res.status === 204) return { ok: true };
+
   return res.json();
 }
 
@@ -31,12 +43,14 @@ async function postJson(path: string, body: any) {
 // 1) Wissen komplett löschen (Panic Reset)
 // --------------------------------------------------------
 export async function apiResetUserKnowledge(userId: string) {
-  return postJson("resetUserKnowledge", { userId });
+  if (!userId) throw new Error("apiResetUserKnowledge: missing userId");
+  return postJsonAuthed("resetUserKnowledge", { userId });
 }
 
 // --------------------------------------------------------
 // 2) Persönlichkeit zurücksetzen
 // --------------------------------------------------------
 export async function apiResetUserPersonality(userId: string) {
-  return postJson("resetUserPersonality", { userId });
+  if (!userId) throw new Error("apiResetUserPersonality: missing userId");
+  return postJsonAuthed("resetUserPersonality", { userId });
 }

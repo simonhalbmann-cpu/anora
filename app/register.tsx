@@ -80,39 +80,46 @@ export default function Register() {
       // 4) User-Daten + Personality in Firestore speichern (nicht UI-blockierend)
       (async () => {
         try {
-          // Basis-Userdaten
-          await setDoc(doc(db, "users", user.uid), {
-            firstName,
-            lastName,
-            dob,
-            email: email.trim().toLowerCase(),
-            createdAt: serverTimestamp(),
-          });
+          // Alles nach /profiles/{uid} (Rules erlauben das). Keine /users Collection.
+const defaultPersonality = {
+  coreVersion: 1,
+  tone: {
+    directness: 0.9,
+    humor: 0.3,
+    formality: 0.3,
+    empathy: 0.8,
+    emojiUsage: 0.1,
+  },
+  answerStyle: {
+    length: "kurz",
+    structure: "listen",
+    explanations: "mittel",
+  },
+  behaviour: {
+    askBeforeAssumptions: true,
+    correctUserGently: true,
+    proactiveHints: true,
+  },
+  updatedAt: Date.now(),
+};
 
-          // Standard-Persönlichkeit für diesen User
-          const defaultPersonality = {
-            coreVersion: 1,
-            tone: {
-              directness: 0.9,
-              humor: 0.3,
-              formality: 0.3,
-              empathy: 0.8,
-              emojiUsage: 0.1,
-            },
-            answerStyle: {
-              length: "kurz",
-              structure: "listen",
-              explanations: "mittel",
-            },
-            behaviour: {
-              askBeforeAssumptions: true,
-              correctUserGently: true,
-              proactiveHints: true,
-            },
-            updatedAt: Date.now(),
-          };
+// Profil + Basisdaten in EIN Dokument schreiben
+await setDoc(
+  doc(db, "profiles", user.uid),
+  {
+    // Basis-Userdaten
+    firstName,
+    lastName,
+    dob,
+    email: email.trim().toLowerCase(),
+    createdAt: serverTimestamp(),
 
-          await setDoc(doc(db, "profiles", user.uid), defaultPersonality);
+    // Personality
+    personality: defaultPersonality,
+    updatedAt: serverTimestamp(),
+  },
+  { merge: true }
+);
         } catch (e) {
           console.log("Firestore user/profile write failed:", e);
         }

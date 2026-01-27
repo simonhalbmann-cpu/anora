@@ -22,7 +22,7 @@ export async function saveNewFacts(userId: string, facts: BrainFactInput[]) {
   if (!facts || facts.length === 0) return;
 
   const db = getDb();
-  const col = db.collection("brain").doc(userId).collection("facts");
+  const col = db.collection("brain").doc(userId).collection("ingest_facts_v1");
   const batch = db.batch();
   const now = Date.now();
 

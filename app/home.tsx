@@ -1,7 +1,8 @@
 // app/home.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import { onAuthStateChanged } from "firebase/auth";
+import { getIdToken, onAuthStateChanged } from "firebase/auth";
+import { collection, getDocs, limit, query } from "firebase/firestore";
 import { Mic, Plus, Send } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -19,13 +20,20 @@ import {
 } from "react-native";
 import HeaderMenu from "../src/components/HeaderMenu";
 import NeuralBackground from "../src/components/NeuralBackground";
-import { auth } from "../src/services/firebase";
+import { auth, db } from "../src/services/firebase";
 
 // ------------------------------------------------------------------
 // Konfiguration
 // ------------------------------------------------------------------
 const ANORA_BASE_URL =
-  "http://192.168.178.141:5001/anoraapp-ai/us-central1";
+  "http://192.168.178.141:5001/anoraapp-ai/us-central1/api";
+
+  async function getAuthHeader(): Promise<Record<string, string>> {
+  const u = auth.currentUser;
+  if (!u) return {};
+  const token = await u.getIdToken(true); 
+  return { Authorization: `Bearer ${token}` };
+}
 
 // ------------------------------------------------------------------
 // Typen
@@ -47,59 +55,59 @@ type PresenceEvent = {
   source?: string;
   linkedTaskId?: string | null;
   status?: string;
-  // falls Backend später mehr Felder liefert, stört es hier nicht
+};
+
+type DigestBlock = {
+  id: string;
+  title?: string; // Backend liefert default "Zusammenfassung" (UI kann ignorieren)
+  message: string;
+  createdAt: number;
+  source?: string;
+  status?: string;
+};
+
+type PresenceResponseV2 = {
+  ok: true;
+  digest?: DigestBlock | null;
+  presence?: PresenceEvent | null;
 };
 
 // ------------------------------------------------------------------
 // Presence-Fetcher: holt Event + fügt die ID korrekt hinzu
 // ------------------------------------------------------------------
-async function fetchPresenceEvent(
-  userId: string
-): Promise<PresenceEvent | null> {
+async function fetchPresence(): Promise<{
+  digest: DigestBlock | null;
+  presence: PresenceEvent | null;
+}> {
   try {
+    const authHeader = await getAuthHeader();
+if (!authHeader.Authorization) return { digest: null, presence: null };
+
+
     const response = await fetch(`${ANORA_BASE_URL}/anoraPresence`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...authHeader,
       },
-      body: JSON.stringify({ userId }),
+      body: JSON.stringify({}), // leer lassen
     });
 
-    // 204 = absichtlich kein Content
     if (response.status === 204) {
-      console.log("anoraPresence: kein Event (204)");
-      return null;
+      console.log("anoraPresence: kein Digest/Presence (204)");
+      return { digest: null, presence: null };
     }
 
     if (!response.ok) {
       console.log("anoraPresence-Fehlerstatus:", response.status);
-      return null;
+      return { digest: null, presence: null };
     }
 
-    // Nur jetzt JSON lesen
-    const data = await response.json();
-
-    if (!data || !data.event) {
-      return null;
-    }
-
-    // Backend: { id, event: { ... } }
-    const raw = data.event;
-
-    const event: PresenceEvent = {
-      id: data.id ?? raw.id ?? "unknown",
-      type: raw.type,
-      message: raw.message,
-      createdAt: raw.createdAt ?? Date.now(),
-      source: raw.source,
-      linkedTaskId: raw.linkedTaskId ?? null,
-      status: raw.status,
-    };
-
-    return event;
+    const data = (await response.json()) as PresenceResponseV2;
+    return { digest: data?.digest ?? null, presence: data?.presence ?? null };
   } catch (e) {
     console.log("Fehler beim Abruf von anoraPresence:", e);
-    return null;
+    return { digest: null, presence: null };
   }
 }
 
@@ -128,6 +136,25 @@ function inferMode(text: string): MessageMode {
   return "teach";
 }
 
+let _printedTokenOnce = false;
+
+async function debugPrintIdTokenOnce() {
+  if (_printedTokenOnce) return;
+  _printedTokenOnce = true;
+
+  try {
+    const u = auth.currentUser;
+    if (!u) {
+      console.log("ID_TOKEN: no currentUser yet");
+      return;
+    }
+    const t = await getIdToken(u, true);
+    console.log("ID_TOKEN:", t);
+  } catch (e) {
+    console.log("ID_TOKEN error:", e);
+  }
+}
+
 // ------------------------------------------------------------------
 // Hauptkomponente
 // ------------------------------------------------------------------
@@ -139,11 +166,11 @@ export default function HomeScreen() {
 
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
+  const [brainFacts, setBrainFacts] = useState<any[]>([]);
   const [sending, setSending] = useState(false);
 
-  const [presenceEvent, setPresenceEvent] = useState<PresenceEvent | null>(
-    null
-  );
+  const [presenceDigest, setPresenceDigest] = useState<DigestBlock | null>(null);
+  const [presenceEvent, setPresenceEvent] = useState<PresenceEvent | null>(null);
 
   const scrollViewRef = useRef<ScrollView | null>(null);
 
@@ -154,8 +181,16 @@ export default function HomeScreen() {
     const currentUser = auth.currentUser;
     if (!currentUser) return;
 
-    console.log("Presence: initial load for user", currentUser.uid);
-    loadPresenceForUser(currentUser.uid);
+    console.log("Presence: initial load");
+loadPresence();
+
+// ✅ Brain Facts laden (einmalig nach Login)
+  loadFactsForUser(currentUser.uid);
+
+
+// optional für Debug 1x Token ausgeben:
+debugPrintIdTokenOnce();
+
   }, [checkingAuth]);
 
   // Auth prüfen und Vorname aus AsyncStorage laden
@@ -218,14 +253,36 @@ export default function HomeScreen() {
     }
   }, [messages]);
 
-  async function loadPresenceForUser(userId: string) {
-    try {
-      const event = await fetchPresenceEvent(userId);
-      setPresenceEvent(event);
-    } catch (err) {
-      console.log("Fehler beim Laden von Presence:", err);
-    }
+  async function loadFactsForUser(uid: string) {
+  try {
+    const colRef = collection(db, "brain", uid, "facts");
+    const qy = query(colRef, limit(200)); // fürs Debug erstmal begrenzen
+    const snap = await getDocs(qy);
+
+    const factsRaw: any[] = [];
+snap.forEach((d) => factsRaw.push(d.data()));
+
+// ✅ aktiv-only: isSuperseded !== true (false oder undefined gilt als aktiv)
+const factsActive = factsRaw.filter((x) => x && x.isSuperseded !== true);
+
+setBrainFacts(factsActive);
+console.log("Loaded brain facts (active):", factsActive.length);
+
+  } catch (e) {
+    console.log("Fehler beim Laden brain facts:", e);
+    setBrainFacts([]);
   }
+}
+
+  async function loadPresence() {
+  try {
+    const out = await fetchPresence();
+    setPresenceDigest(out.digest);
+    setPresenceEvent(out.presence);
+  } catch (err) {
+    console.log("Fehler beim Laden von Presence:", err);
+  }
+}
 
   type PresenceAction = "view_now" | "snooze" | "disable";
 
@@ -270,25 +327,25 @@ export default function HomeScreen() {
     const eventId = presenceEvent.id;
     setPresenceEvent(null);
 
-    // 4) Backend informieren
-    const currentUser = auth.currentUser;
-    const userId = currentUser?.uid;
-
-    if (!userId || !eventId) {
-      console.log("Keine gültige userId oder eventId für PresenceAction");
-      return;
-    }
-
+    // 4) Backend informieren (AUTH-only, KEIN userId)
     try {
+      const authHeader = await getAuthHeader();
+      if (!authHeader.Authorization) {
+        console.log("PresenceAction: not authenticated");
+        return;
+      }
+
       await fetch(`${ANORA_BASE_URL}/anoraPresenceAction`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId,
-          eventId,
-          action,
-        }),
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeader,
+        },
+        body: JSON.stringify({ eventId, action }), // userId bewusst NICHT senden
       });
+
+      // danach Presence neu laden
+      await loadPresence();
     } catch (e) {
       console.log("Fehler bei handlePresenceAction:", e);
     }
@@ -328,22 +385,75 @@ console.log("handleSend payload:", {
         message: trimmed,
         history: historyPayload,
       });
-      
-      const response = await fetch(
-        `${ANORA_BASE_URL}/anoraChat`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            userId,
-            userName,
-            message: trimmed,
-            history: historyPayload,
-          }),
-        }
-      );
+
+// 🔀 DEV-Shortcut: "zeige fakten" direkt aus dem Client beantworten (ohne Backend)
+// Schlank: nur latest + dedupe nach (key + entityId)
+if (/^\s*(zeige|zeig)\s+(mir\s+)?(deine\s+)?(gespeicherten\s+)?fakten\s*\.?\s*$/i.test(trimmed)) {
+  const list = Array.isArray(brainFacts) ? brainFacts : [];
+
+  // 1) nur latest (falls meta vorhanden)
+  const latestOnly = list.filter((f: any) => f?.meta?.latest === true);
+
+  // 2) dedupe: key + entityId
+  const seen = new Set<string>();
+  const deduped = latestOnly.filter((f: any) => {
+    const key = String(f?.key ?? "?");
+    const entityId = String(f?.entityId ?? "");
+    const sig = `${key}::${entityId}`;
+    if (seen.has(sig)) return false;
+    seen.add(sig);
+    return true;
+  });
+
+  const factsText =
+    deduped.length > 0
+      ? deduped
+          .map((f: any) => {
+            const key = String(f?.key ?? "?");
+            const entityId = f?.entityId ? ` (${String(f.entityId)})` : "";
+            return `- ${key}${entityId}: ${JSON.stringify(f?.value ?? null)}`;
+          })
+          .join("\n")
+      : "Keine latest Facts im Client-State.";
+
+  const anoraMessage: Message = {
+    id: Date.now().toString() + "-anora-facts",
+    role: "anora",
+    mode,
+    text: `Aktueller Client-State (brainFacts, latest+deduped):\n${factsText}`,
+  };
+
+  setMessages((prev) => [...prev, anoraMessage]);
+  setSending(false);
+
+console.log("brainFacts[0] sample:", (Array.isArray(brainFacts) ? brainFacts[0] : null));
+
+  return;
+}
+
+      const response = await fetch(`${ANORA_BASE_URL}/anoraChat`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+  userId,
+  userName,
+  message: trimmed,
+  useSatellite: true,
+
+  brain: {
+    history: historyPayload,
+    knowledge: [],
+    contexts: null,
+  },
+
+  state: { locale: "de-DE", facts: brainFacts },
+
+  // 🔴 HIER
+  dryRun: false,
+}),
+});
 
       if (!response.ok) {
         console.log("Backend-Fehlerstatus:", response.status);
@@ -365,6 +475,11 @@ console.log("handleSend payload:", {
 
       const data = await response.json();
 
+      // ✅ nach Write: Facts erneut ziehen (damit UI/State nicht stale ist)
+if (currentUser?.uid) {
+  loadFactsForUser(currentUser.uid);
+}
+
       const replyText =
         typeof data.reply === "string" && data.reply.trim().length > 0
           ? data.reply.trim()
@@ -379,14 +494,10 @@ console.log("handleSend payload:", {
 
       setMessages((prev) => [...prev, anoraMessage]);
 
-      // Nach erfolgreicher Antwort Presence neu laden
-      if (currentUser?.uid) {
-        try {
-          await loadPresenceForUser(currentUser.uid);
-        } catch (e) {
-          console.log("Fehler beim Laden von Anora Presence:", e);
-        }
-      }
+      // Presence-Reload ist aktuell deaktiviert (loadPresenceForUser existiert nicht)
+if (currentUser?.uid) {
+  console.log("Presence reload skipped: loadPresenceForUser not wired yet");
+}
     } catch (e) {
       console.log("Fehler beim Senden an anoraChat:", e);
       const errorMessage: Message = {
@@ -426,6 +537,15 @@ console.log("handleSend payload:", {
     );
   }
 
+  const hasDigest = !!presenceDigest?.message?.trim();
+  const hasPresence = !!presenceEvent?.message?.trim();
+
+  const cardTitle = hasDigest && hasPresence
+    ? "Übersicht + Offenes Thema"
+    : hasPresence
+      ? "Offenes Thema"
+      : "Kurzüberblick";
+
   return (
   <View style={styles.container}>
     <NeuralBackground />
@@ -455,41 +575,50 @@ console.log("handleSend payload:", {
         keyboardShouldPersistTaps="handled"
       >
         {/* Presence-Karte */}
-        {presenceEvent && (
-          <View style={styles.presenceCard}>
-            <Text style={styles.presenceTitle}>ANORA PRESENCE</Text>
+        {(presenceDigest || presenceEvent) && (
+  <View style={styles.presenceCard}>
+    <Text style={styles.presenceTitle}>{cardTitle}</Text>
 
-            {/* Kleine Erklärung direkt auf der Karte*/}
-            <Text style={styles.presenceSubtitle}>
-              Hinweis zu offenen Themen - keine Autohandlung, kein Smalltalk.
-            </Text>
+    {/* DIGEST-SECTION */}
+    {presenceDigest && (
+      <View style={styles.digestSection}>
+        <Text style={styles.digestHeader}>Kurzüberblick</Text>
+        <Text style={styles.digestText}>{presenceDigest.message}</Text>
+      </View>
+    )}
 
-            <Text style={styles.presenceMessage}>{presenceEvent.message}</Text>
+    {/* PRESENCE-SECTION */}
+    {presenceEvent && (
+      <View style={styles.presenceSection}>
+        <Text style={styles.presenceHeader}>Offenes Thema</Text>
+        <Text style={styles.presenceMessage}>{presenceEvent.message}</Text>
 
-            <View style={styles.presenceButtonsRow}>
-              <TouchableOpacity
-                style={[styles.presenceButton, styles.presenceButtonPrimary]}
-                onPress={() => handlePresenceAction("view_now")}
-              >
-                <Text style={styles.presenceButtonPrimaryText}>Jetzt ansehen</Text>
-              </TouchableOpacity>
+        <View style={styles.presenceButtonsRow}>
+          <TouchableOpacity
+            style={[styles.presenceButton, styles.presenceButtonPrimary]}
+            onPress={() => handlePresenceAction("view_now")}
+          >
+            <Text style={styles.presenceButtonPrimaryText}>Jetzt ansehen</Text>
+          </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[styles.presenceButton, styles.presenceButtonSecondary]}
-                onPress={() => handlePresenceAction("snooze")}
-              >
-                <Text style={styles.presenceButtonSecondaryText}>Später</Text>
-              </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.presenceButton, styles.presenceButtonSecondary]}
+            onPress={() => handlePresenceAction("snooze")}
+          >
+            <Text style={styles.presenceButtonSecondaryText}>Später</Text>
+          </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[styles.presenceButton, styles.presenceButtonSecondary]}
-                onPress={() => handlePresenceAction("disable")}
-              >
-                <Text style={styles.presenceButtonSecondaryText}>Thema ausblenden</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
+          <TouchableOpacity
+            style={[styles.presenceButton, styles.presenceButtonSecondary]}
+            onPress={() => handlePresenceAction("disable")}
+          >
+            <Text style={styles.presenceButtonSecondaryText}>Ausblenden</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    )}
+  </View>
+)}
 
         {/* Normale Chat-Nachrichten */}
         {messages.map((item) => {
@@ -690,5 +819,35 @@ const styles = StyleSheet.create({
   fontSize: 11,
   color: "#9ca3af",
   marginBottom: 6,
+},
+
+digestSection: {
+  marginTop: 6,
+  marginBottom: 10,
+  paddingBottom: 10,
+  borderBottomWidth: 1,
+  borderBottomColor: "#1e293b",
+},
+digestHeader: {
+  fontSize: 12,
+  color: "#93c5fd",
+  marginBottom: 6,
+  fontWeight: "600",
+},
+digestText: {
+  fontSize: 13,
+  color: "#e5e7eb",
+  opacity: 0.95,
+  lineHeight: 18,
+},
+
+presenceSection: {
+  marginTop: 6,
+},
+presenceHeader: {
+  fontSize: 12,
+  color: "#bbf7d0",
+  marginBottom: 6,
+  fontWeight: "600",
 },
 });

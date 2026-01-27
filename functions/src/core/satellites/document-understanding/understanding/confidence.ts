@@ -93,7 +93,7 @@ export function scoreUnderstandingConfidence(input: {
   if (docTypeUnknown) penalties += 0.12;
 
   // no text => heavy penalty (understanding is limited)
-  if (!input.hasText) penalties += 0.45;
+  if (!input.hasText) penalties += 0.50;
 
   // scanned-like => reduces trust
   if (input.scannedLike) penalties += 0.18;

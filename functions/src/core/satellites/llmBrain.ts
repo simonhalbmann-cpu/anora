@@ -32,9 +32,8 @@ export type LlmBrainDeps = {
   maxKnowledgeSummaryLength: number;
   maxHistoryTurns: number;
   maxHistorySummaryLength: number;
-  maxUserMessageLength: number;
 
-  safeParseAssistantJson: (raw: string) => any;
+  safeParseAssistantJson: (raw: string) => { ok: boolean; value?: any; error?: string; jsonCandidate?: string };
 
   fallbackCopy: {
     invalidJson: string;
@@ -90,8 +89,7 @@ export async function runLlmBrainSatellite(
       ? lastTurnsRaw.slice(0, deps.maxHistorySummaryLength) + "\n[GEKÜRZT]"
       : lastTurnsRaw;
 
-  const truncatedMessage =
-    typeof message === "string" ? message.slice(0, deps.maxUserMessageLength) : "";
+  const safeMessage = typeof message === "string" ? message : "";
 
   const interventionLevel = core?.intervention?.level ?? "observe";
   const interventionDirective = buildInterventionDirectiveV1(interventionLevel);
@@ -124,10 +122,15 @@ ${contextSummary}
 # Bereits gespeichertes Wissen:
 ${knowledgeSummary}
 
-# Neue Nachricht:
-"${truncatedMessage}"
+WICHTIG:
+- Du gibst NUR ein JSON zurück.
+- Keys: reply,newFacts,actions,tasks
+- reply ist ein String.
+- newFacts/actions/tasks sind Arrays.
+- Folge der LETZTEN Instruktion, die innerhalb der Nutzer-Nachricht steht.
 
-Bitte gib NUR ein JSON im beschriebenen Format zurück.
+# Neue Nachricht (das ist der letzte Prompt-Teil, danach kommt nichts mehr):
+"${safeMessage}"
 `.trim();
 
   try {
@@ -140,10 +143,10 @@ Bitte gib NUR ein JSON im beschriebenen Format zurück.
     const completion = await deps.openai.chat.completions.create({
       model: deps.model,
       messages: [
-        { role: "system", content: deps.systemPrompt },
-        { role: "system", content: interventionDirective },
-        { role: "user", content: userPrompt },
-      ],
+  { role: "system", content: deps.systemPrompt },
+  { role: "system", content: interventionDirective },
+  { role: "user", content: userPrompt },
+],
       temperature: 0.2,
     });
 
@@ -152,22 +155,41 @@ Bitte gib NUR ein JSON im beschriebenen Format zurück.
 
     const parsed = deps.safeParseAssistantJson(raw);
 
-    // 1) parsed muss Objekt sein (kein Array)
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { reply: deps.fallbackCopy.invalidJson, newFacts: [], actions: [], tasks: [] };
-    }
+// 1) Parse muss ok sein
+if (!parsed?.ok) {
+  logger.error("llmBrain_parse_failed", {
+    userId,
+    error: parsed?.error ?? "unknown",
+    jsonCandidate: parsed?.jsonCandidate ?? "",
+    rawPreview: raw.slice(0, 500),
+  });
+  return { reply: deps.fallbackCopy.invalidJson, newFacts: [], actions: [], tasks: [] };
+}
+
+const obj = parsed.value;
+
+// 2) obj muss Objekt sein (kein Array)
+if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+  logger.error("llmBrain_shape_invalid", {
+    userId,
+    typeofValue: typeof obj,
+    isArray: Array.isArray(obj),
+    jsonCandidate: parsed.jsonCandidate,
+  });
+  return { reply: deps.fallbackCopy.invalidJson, newFacts: [], actions: [], tasks: [] };
+}
 
     // 2) reply muss nicht-leer sein
-    const reply =
-      typeof (parsed as any).reply === "string" ? String((parsed as any).reply).trim() : "";
+   const reply =
+  typeof (obj as any).reply === "string" ? String((obj as any).reply).trim() : "";
 
     if (!reply) {
       return { reply: deps.fallbackCopy.invalidJson, newFacts: [], actions: [], tasks: [] };
     }
 
     // 3) Arrays defensiv normalisieren
-    const actions = Array.isArray((parsed as any).actions) ? (parsed as any).actions : [];
-    const tasks = Array.isArray((parsed as any).tasks) ? (parsed as any).tasks : [];
+    const actions = Array.isArray((obj as any).actions) ? (obj as any).actions : [];
+const tasks = Array.isArray((obj as any).tasks) ? (obj as any).tasks : [];
 
     // 4) FINAL: newFacts ist IMMER leer (Satellite ist reply-only)
     const newFacts: any[] = [];

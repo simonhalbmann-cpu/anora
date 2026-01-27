@@ -24,6 +24,28 @@ export function __resetExecutorCalls__() {
   __EXECUTOR_CALLS__ = 0;
 }
 
+function stripUndefinedDeep<T>(value: T): T {
+  if (value === undefined) return undefined as any;
+  if (value === null) return value;
+
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => stripUndefinedDeep(v))
+      .filter((v) => v !== undefined) as any;
+  }
+
+  if (typeof value === "object") {
+    const out: any = {};
+    for (const [k, v] of Object.entries(value as any)) {
+      const vv = stripUndefinedDeep(v);
+      if (vv !== undefined) out[k] = vv;
+    }
+    return out;
+  }
+
+  return value;
+}
+
 function canonicalizeFactDocForNoop(doc: any): any {
   if (!doc || typeof doc !== "object") return doc;
 
@@ -302,7 +324,7 @@ const batch = db.batch();
       key: f.key,
       value: f.value,
       validity: f.validity ?? null,
-      meta: f.meta ?? null,
+      meta: f.meta ? stripUndefinedDeep(f.meta) : null,
       source: f.source ?? "raw_event",
       sourceRef: f.sourceRef ?? input.out.rawEvent.rawEventId,
       conflict: !!f.conflict,

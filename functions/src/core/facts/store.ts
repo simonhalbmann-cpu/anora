@@ -2,9 +2,9 @@
 // Roadmap 3.3: FactStore (Firestore) – minimal, stabil, domain-agnostisch
 
 import { createHash } from "crypto";
-import * as admin from "firebase-admin";
 import { logger } from "firebase-functions/v2";
 import { toEntityDomain } from "../entities/types";
+import { getDb } from "../firebase/getDb";
 import { stableStringify } from "../utils/stableStringify";
 import { buildFactId } from "./factId";
 import { normalizeFactValueByLocale } from "./locale";
@@ -43,14 +43,8 @@ function canonicalizeFactForNoop(doc: any) {
   return clone;
 }
 
-function getDb() {
-  // Wichtig: initializeApp muss VORHER in index.ts passieren.
-  // Deshalb hier nur admin.firestore() ziehen.
-  return admin.firestore();
-}
-
 function factsCol(userId: string) {
-  return getDb().collection("brain").doc(userId).collection("facts_v1");
+  return getDb().collection("brain").doc(userId).collection("facts");
 }
 
 function evidenceCol(userId: string) {
@@ -167,11 +161,12 @@ if (!entityId) {
         typeof f.factId === "string" && f.factId.trim()
           ? f.factId.trim()
           : buildFactId({
-              entityId: entityId,
-              key,
-              value: isLatest ? "__latest__" : normalizedValue,
-              options: { validityWindow },
-            });
+    entityId: entityId,
+    domain, // << NEU
+    key,
+    value: isLatest ? "__latest__" : normalizedValue,
+    options: { validityWindow },
+  });
 
       // ------------------------------------------------------------
 // Evidence v1

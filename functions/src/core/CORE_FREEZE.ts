@@ -2,10 +2,17 @@
 // Phase 0.2 — Index Freeze (minimal)
 
 export const FROZEN = {
-  factKeys: ["city", "rent_cold", "doc:summary"] as const,
+  factKeys: [
+  "city",
+  "rent_cold",
+  "rent_nk",
+  "units_count",
+  "units_total",          
+  "shop_rent_cold",
+  "shop_rent_nk",
+  "doc:summary",
+] as const,
   domains: ["real_estate", "generic"] as const,
-
-  // ✅ NEU: nur das, was aktuell existiert (Index-Freeze)
   extractors: ["real_estate.v1"] as const,
 } as const;
 

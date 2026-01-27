@@ -1,6 +1,8 @@
 // functions/src/core/parsing/safeParseAssistantJson.ts
 
-import { logger } from "firebase-functions/v2";
+export type SafeParseAssistantJsonResult =
+  | { ok: true; value: any; jsonCandidate: string }
+  | { ok: false; error: string; jsonCandidate: string };
 
 function extractJsonBlock(raw: string): string {
   const trimmed = String(raw ?? "").trim();
@@ -19,7 +21,6 @@ function extractJsonBlock(raw: string): string {
     const fenceEnd = trimmed.indexOf("```", fenceStart + 3);
     if (fenceEnd !== -1) {
       const inside = trimmed.slice(fenceStart + 3, fenceEnd).trim();
-      // optional "json" am Anfang entfernen
       return inside.replace(/^json\s*/i, "").trim();
     }
   }
@@ -35,17 +36,13 @@ function extractJsonBlock(raw: string): string {
   return trimmed;
 }
 
-export function safeParseAssistantJson(raw: string): any | null {
+export function safeParseAssistantJson(raw: string): SafeParseAssistantJsonResult {
   const jsonCandidate = extractJsonBlock(raw);
 
   try {
-    return JSON.parse(jsonCandidate);
+    const value = JSON.parse(jsonCandidate);
+    return { ok: true, value, jsonCandidate };
   } catch (err) {
-    logger.error("safeParseAssistantJson_failed", {
-      raw,
-      jsonCandidate,
-      error: String(err),
-    });
-    return null;
+    return { ok: false, error: String(err), jsonCandidate };
   }
 }
