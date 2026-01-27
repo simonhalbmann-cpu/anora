@@ -1,79 +1,90 @@
 // functions/src/core/facts/factMeta.ts
+// PHASE 1.1 — FactMetaV1 + Normalizer
+// Core-owned, deterministic
 
-/**
- * Globale Meta-Information für JEDEN Fakt in Anora.
- * Satelliten dürfen nur FELDER BEFÜLLEN – keine Logik.
- */
+export type FactFinality = "draft" | "final";
+
+export type FactSourceType =
+  | "user"
+  | "contract"
+  | "expose"
+  | "email"
+  | "document"
+  | "system"
+  | "other";
+
 export type FactMetaV1 = {
-  /** Woher kommt die Information? */
-  sourceType:
-    | "user_direct"
-    | "contract"
-    | "official_document"
-    | "email"
-    | "expose"
-    | "raw_event"
-    | "inference"
-    | "other";
+  version: 1;
 
-  /** Welcher Satellit hat den Fakt erzeugt? */
-  satelliteId: string;
+  // Herkunft
+  sourceType: FactSourceType;
 
-  /** Wie zuverlässig ist die Quelle an sich? (0–1) */
-  sourceReliability: number;
+  // Qualität
+  confidence?: number;          // 0..1
+  sourceReliability?: number;   // 0..1
 
-  /** Wie sicher ist sich der Satellit selbst? (0–1) */
-  confidence: number;
-
-  /** Zeitliche Einordnung */
-  temporal:
-    | "final"
-    | "amended"
-    | "preliminary"
-    | "unknown";
-
-  /** Benutzer hat explizit bestätigt */
-  userConfirmed?: boolean;
-
-  /** Technische Marker */
+  // Systemflags
   system?: boolean;
   latest?: boolean;
+
+  // User-Override
+  override?: boolean;
+  finality?: FactFinality;
+
+  // Satelliten
+  extractorId?: string;
+  satelliteId?: string;
+
+  // Zeit
+  temporal?: "past" | "present" | "future" | "unknown";
 };
 
-// --------------------------------------------------
-// Normalisierung: erzwingt konsistentes Fact-Meta
-// --------------------------------------------------
-
 export function normalizeFactMeta(
-  raw: Partial<FactMetaV1>,
-  satelliteId: string
+  raw: any,
+  fallback?: Partial<FactMetaV1>
 ): FactMetaV1 {
+  const meta = { ...(raw ?? {}) };
+
   return {
-    sourceType: raw.sourceType ?? "other",
+    version: 1,
 
-    satelliteId,
-
-    sourceReliability:
-      typeof raw.sourceReliability === "number"
-        ? clamp01(raw.sourceReliability)
-        : 0.5,
+    sourceType:
+      meta.sourceType ??
+      fallback?.sourceType ??
+      "other",
 
     confidence:
-      typeof raw.confidence === "number"
-        ? clamp01(raw.confidence)
-        : 0.5,
+      typeof meta.confidence === "number"
+        ? Math.max(0, Math.min(1, meta.confidence))
+        : fallback?.confidence,
 
-    temporal: raw.temporal ?? "unknown",
+    sourceReliability:
+      typeof meta.sourceReliability === "number"
+        ? Math.max(0, Math.min(1, meta.sourceReliability))
+        : fallback?.sourceReliability,
 
-    userConfirmed: raw.userConfirmed === true,
+    system: meta.system === true,
+    latest: meta.latest === true,
 
-    system: raw.system === true,
-    latest: raw.latest === true,
+    override: meta.override === true,
+    finality:
+      meta.finality === "final" ? "final" : "draft",
+
+    extractorId:
+      typeof meta.extractorId === "string"
+        ? meta.extractorId
+        : fallback?.extractorId,
+
+    satelliteId:
+      typeof meta.satelliteId === "string"
+        ? meta.satelliteId
+        : fallback?.satelliteId,
+
+    temporal:
+      meta.temporal === "past" ||
+      meta.temporal === "present" ||
+      meta.temporal === "future"
+        ? meta.temporal
+        : "unknown",
   };
-}
-
-// Hilfsfunktion: Zahl sicher auf 0..1 begrenzen
-function clamp01(n: number): number {
-  if (!Number.isFinite(n)) return 0.5;
-  return Math.max(0, Math.min(1, n));
 }
