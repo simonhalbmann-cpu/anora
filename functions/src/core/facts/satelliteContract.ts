@@ -28,7 +28,7 @@ export type SatelliteFactContract = {
   // Provenance / Herkunft
   meta: {
     extractorId: string;   // z.B. "real_estate.v1"
-    satelliteId: string;   // z.B. "document-understanding.v1"
+    satelliteId: string;
 
     // Quelle (kleine, feste Liste)
     sourceType:

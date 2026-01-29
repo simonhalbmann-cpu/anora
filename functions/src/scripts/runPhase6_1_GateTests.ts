@@ -2,9 +2,9 @@
 import { strict as assert } from "assert";
 
 import {
-    gateDailyDigestPlan,
-    type UserTier,
-} from "../core/satellites/document-understanding/limits/freeProGates";
+  gateDailyDigestPlan,
+  type UserTier,
+} from "../core/satellites/_deprecated/document-understanding/limits/freeProGates";
 
 function testGate(tier: UserTier | any, expectedAllowed: boolean, expectedReason: string) {
   const out = gateDailyDigestPlan({ tier });

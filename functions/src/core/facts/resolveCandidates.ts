@@ -6,6 +6,39 @@ import { computeFactStrength } from "./factStrength";
 import { factValueEquals } from "./factValueEquals";
 import type { FactDoc } from "./types";
 
+function mapSourceTypeForStrength(
+  t: any
+):
+  | "contract"
+  | "expose"
+  | "email"
+  | "other"
+  | "user_input"
+  | "official_document"
+  | "derived" {
+  switch (t) {
+    case "contract":
+      return "contract";
+    case "expose":
+      return "expose";
+    case "email":
+      return "email";
+
+    // dein FactMetaV1
+    case "user_direct":
+      return "user_input";
+    case "official_document":
+      return "official_document";
+    case "inference":
+      return "derived";
+    case "raw_event":
+      return "other";
+
+    default:
+      return "other";
+  }
+}
+
 // --------------------------------------------------
 // Ergebnis-Typ
 // --------------------------------------------------
@@ -68,14 +101,20 @@ export function resolveCandidates(
   // 1) Scores berechnen (HART normalisiert)
 const scored: DebugScore[] = candidates.map((f) => {
   const raw = computeFactStrength({
-    sourceType: f.meta?.sourceType ?? "other",
+    sourceType: mapSourceTypeForStrength(f.meta?.sourceType),
     sourceReliability: f.meta?.sourceReliability ?? 0.5,
     confidence: f.meta?.confidence ?? 0.5,
-    temporal: f.meta?.temporal ?? "unknown",
+    temporal:
+  f.meta?.temporal === "present"
+    ? "current"
+    : f.meta?.temporal === "past"
+      ? "historical"
+      : f.meta?.temporal === "future"
+        ? "unknown"
+        : (f.meta?.temporal ?? "unknown"),
     userConfirmed: f.meta?.userConfirmed === true,
     system: f.meta?.system === true,
     latest: f.meta?.latest === true,
-    satelliteId: f.meta?.satelliteId ?? "unknown",
   });
 
   // 🔒 ABSOLUTE GARANTIE: score ist IMMER eine Zahl

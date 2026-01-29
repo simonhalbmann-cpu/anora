@@ -9,11 +9,8 @@
  * -> factsDiff (new/ignored) -> haltungDelta -> intervention
  */
 import { FROZEN } from "./CORE_FREEZE";
-import { toEntityDomain } from "./entities/types";
 import { dayBucketUTC, sha256 } from "./rawEvents/hash";
 import type { RawEventDoc } from "./rawEvents/types";
-
-import { bootstrapSatellites } from "./satellites/registryBootstrap";
 
 import { buildFactId } from "./facts/factId";
 import { normalizeFactValueByLocale } from "./facts/locale";
@@ -35,15 +32,7 @@ import { toExtractorInputV1 } from "./runner/extractorInput";
 import { mapIdFromFingerprint, normalizeFingerprint } from "./entities/fingerprint";
 import { stableStringify } from "./utils/stableStringify";
 
-import { getSatellite } from "./satellites/registry";
-import type { SatelliteInput, SatelliteOutput } from "./satellites/satelliteContract";
 
-import { aggregateDailyDigestV1 } from "./meta/dailyDigestAggregate";
-import type { DailyDigestContributionV1 } from "./satellites/document-understanding/digest/dailyDigestPlan";
-
-import {
-  DOCUMENT_UNDERSTANDING_SATELLITE_ID,
-} from "./satellites/document-understanding";
 
 // -----------------------
 // Types
@@ -74,7 +63,6 @@ export type RunCoreOnceInput = {
     meta?: Record<string, any>;
   }[];
   haltung?: CoreHaltungV1;
-  satelliteIds?: string[];
 
   // ✅ NEU
   tier?: "free" | "pro";
@@ -330,9 +318,6 @@ function applyHaltungPatchPure(before: CoreHaltungV1, patch: Partial<Omit<CoreHa
 
 export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceOutput> {
   // 0) Normalize input
-
-  // Ensure satellites are registered (pure bootstrap)
-  bootstrapSatellites();
   
   const userId = String(input?.userId ?? "").trim();
   if (!userId) throw new Error("runCoreOnce: userId missing");
@@ -352,7 +337,10 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
   const hBefore = normalizeHaltungPure(input?.state?.haltung);
 
   // 1) Build in-memory RawEvent (deterministic)
-  const timestamp = Date.now();
+  const timestamp =
+  typeof (input as any)?.state?.now === "number"
+    ? Math.floor((input as any).state.now)
+    : Date.now();
   const ingestHash = sha256(`${userId}::${locale}::${text}`);
   const rawEventId = sha256(`rawEvent::${ingestHash}`);
 
@@ -416,189 +404,6 @@ warnings.push(...w);
       perExtractor.push({ extractorId, ok: false, error: String(e) });
     }
   }
-
-// 2.5) Satellites (pure)
-// Document Understanding ist STANDARD für Dokumente
-const satelliteIds = Array.isArray(input?.state?.satelliteIds)
-  ? input.state!.satelliteIds
-  : [DOCUMENT_UNDERSTANDING_SATELLITE_ID];
-  
-  const satelliteOutputs: SatelliteOutput[] = [];
-
-  if (satelliteIds.length > 0) {
-
-    const baseInput: Omit<SatelliteInput, "satelliteId"> = {
-  userId,
-  channel: "api_ingest",
-  plan: { tier, flags: {} },
-  guaranteedInput: {
-    rawEvent: {
-      rawEventId,
-      sourceType: "document",
-      payload: {
-        text,
-        // KEINE nulls -> weglassen
-      },
-      meta: { userRef: userId, tier },
-    },
-    existingFacts: prevFacts.map((f: any) => ({
-      factId: f.factId,
-      domain: f.domain,
-      key: f.key,
-      value: f.value,
-      meta: f.meta,
-    })),
-    metaSnapshot: { locale, now: 0, timezone: "UTC", flags: {} },
-  },
-};
-
-    for (const satIdRaw of satelliteIds) {
-      const satId = String(satIdRaw ?? "").trim();
-      if (!satId) continue;
-
-      const def = getSatellite(satId);
-      if (!def) {
-        warnings.push(`satellite_missing:${satId}`);
-        continue;
-      }
-
-      try {
-        const outSat = await def.run({ ...baseInput, satelliteId: satId });
-
-// PHASE 7.2 — Satellite Contract Enforcement (runtime guard)
-
-if (!outSat || typeof outSat !== "object") {
-  throw new Error(`SATELLITE_CONTRACT: ${satId} returned invalid output (not an object)`);
-}
-
-if (outSat.ok !== true && outSat.ok !== false) {
-  throw new Error(`SATELLITE_CONTRACT: ${satId} missing ok flag`);
-}
-
-if (outSat.ok === true) {
-  if (!Array.isArray(outSat.suggestions)) {
-    throw new Error(`SATELLITE_CONTRACT: ${satId} suggestions must be array`);
-  }
-
-  for (const s of outSat.suggestions) {
-    if (!s || typeof s !== "object" || typeof (s as any).kind !== "string") {
-      throw new Error(`SATELLITE_CONTRACT: ${satId} invalid suggestion entry`);
-    }
-
-    if (s.kind === "propose_facts") {
-      if (!Array.isArray((s as any).facts)) {
-        throw new Error(`SATELLITE_CONTRACT: ${satId} propose_facts requires facts[]`);
-      }
-    }
-
-    if (s.kind === "needs_user_confirmation") {
-      if (typeof (s as any).questionCode !== "string") {
-        throw new Error(`SATELLITE_CONTRACT: ${satId} needs_user_confirmation requires questionCode`);
-      }
-    }
-  }
-}
-
-        satelliteOutputs.push(outSat);
-      } catch (e) {
-        warnings.push(`satellite_failed:${satId}:${String(e)}`);
-      }
-    }
-  }
-
-// ----------------------------
-  // Phase 5.2: Collect digest_only contributions (DATA ONLY, PURE)
-  // ----------------------------
-  const digestContribs: DailyDigestContributionV1[] = [];
-
-  for (const sOut of satelliteOutputs) {
-    if (!sOut || (sOut as any).ok !== true) continue;
-
-    const suggestions = Array.isArray((sOut as any).suggestions) ? (sOut as any).suggestions : [];
-    for (const sug of suggestions) {
-      if (!sug || sug.kind !== "digest_only") continue;
-
-      const data = (sug as any).data;
-      // Minimal shape gate (conservative)
-      if (!data || (data as any).version !== 1) continue;
-      if (typeof (data as any).satelliteId !== "string") continue;
-
-      // For now: only accept document-understanding.v1 contributions
-      if ((data as any).satelliteId !== "document-understanding.v1") continue;
-
-      digestContribs.push(data as DailyDigestContributionV1);
-    }
-  }
-
-  const dailyDigestAgg =
-    digestContribs.length > 0
-      ? aggregateDailyDigestV1({ dayBucket: rawEventDoc.dayBucket, contributions: digestContribs })
-      : null;
-
-  // Map satellite propose_facts -> FactInput (still goes through strict validation below)
-  const proposedFacts: FactInput[] = [];
-  for (const sOut of satelliteOutputs) {
-    if (!sOut || (sOut as any).ok !== true) continue;
-
-    const suggestions = Array.isArray((sOut as any).suggestions) ? (sOut as any).suggestions : [];
-    for (const sug of suggestions) {
-      if (!sug || sug.kind !== "propose_facts") continue;
-
-      const facts = Array.isArray(sug.facts) ? sug.facts : [];
-      for (const pf of facts) {
-        const domainRaw = String(pf?.domain ?? "").trim();
-if (!domainRaw) continue;
-
-// HARD FREEZE GATE
-if (!(FROZEN.domains as readonly string[]).includes(domainRaw)) continue;
-
-// typed domain (throws if not frozen-allowed)
-const domain = toEntityDomain(domainRaw);
-        const key = String(pf?.key ?? "").trim();
-        const sourceRef = String(pf?.sourceRef ?? "").trim();
-
-        if (!domain || !key || !sourceRef) continue;
-
-        // HARD FREEZE GATE
-        if (!(FROZEN.domains as readonly string[]).includes(domain)) continue;
-        if (!(FROZEN.factKeys as readonly string[]).includes(key)) continue;
-
-        // Entity Strategy (deterministic, stable per user)
-        const entityFingerprint = `user:${userId}::doc_summary`;
-
-        const meta = pf?.meta && typeof pf.meta === "object" ? pf.meta : undefined;
-
-        proposedFacts.push({
-          domain,
-          key,
-          value: typeof pf?.value === "undefined" ? null : pf.value,
-
-          // IMPORTANT: NOT raw_event (otherwise extractor freeze rejects)
-          source: "other",
-          sourceRef,
-
-          entityDomain: domain,
-          entityType: "document",
-          entityFingerprint,
-
-          meta: {
-            ...(meta ?? {}),
-            system: true,
-            latest: true,
-            locale,
-            satelliteId: (sOut as any).satelliteId,
-          },
-        });
-      }
-    }
-  }
-
-  // feed into the normal pipeline
-  if (proposedFacts.length > 0) {
-    extractedFacts.push(...proposedFacts);
-  }
-
-
 
   // 3) Validate + normalize + compute factIds (pure) + Phase 1.2 strict validation
 const validatedFacts: RunCoreOnceOutput["validatedFacts"] = [];
@@ -790,41 +595,6 @@ for (const f of finalFacts) {
     extractedFactsCount: extractedFacts.length,
     validatedFactsCount: validatedFacts.length,
     perExtractor,
-
-    // nur Debug, bounded
-    satellites: {
-      requested: satelliteIds,
-      ran: satelliteOutputs
-  .map((o: any) => {
-    const insights = Array.isArray(o?.insights) ? o.insights : [];
-    const suggestions = Array.isArray(o?.suggestions) ? o.suggestions : [];
-
-    const digestGate =
-      insights.find((i: any) => i?.code === "digest_plan_gate")?.data ?? null;
-
-    const digestOnly =
-      suggestions.find((s: any) => s?.kind === "digest_only")?.data ?? null;
-
-    return {
-      satelliteId: o?.satelliteId,
-      ok: o?.ok === true,
-      insightsCount: insights.length,
-      suggestionsKinds: suggestions
-        .map((s: any) => s?.kind)
-        .filter(Boolean)
-        .slice(0, 10),
-
-      digest_plan_gate: digestGate,
-
-      // Phase 5.1: DailyDigestContribution sichtbar machen (bounded, data-only)
-      digest_only: digestOnly,
-    };
-  })
-  .slice(0, 5),
-        
-    },
-
-    dailyDigest: dailyDigestAgg,
 
     conflicts: {
   count: conflictEvents.length,

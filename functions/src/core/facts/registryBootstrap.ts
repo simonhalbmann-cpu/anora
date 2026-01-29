@@ -5,6 +5,7 @@
 import { listExtractors, registerExtractor } from "./registry";
 
 // Domain Extractors
+import { documentUnderstandingV1Extractor } from "../../domains/document_understanding/extractors";
 import { realEstateV1Extractor } from "../../domains/real_estate/extractors";
 
 // Optionaler Logger (nur wenn firebase-functions verfügbar ist)
@@ -20,6 +21,7 @@ try {
 
 export function bootstrapExtractors(): void {
   registerExtractor(realEstateV1Extractor);
+  registerExtractor(documentUnderstandingV1Extractor);
 
   // Logging nur, wenn verfügbar
   logInfo?.("extractor_registry_bootstrap", {

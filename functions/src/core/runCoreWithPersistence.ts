@@ -29,14 +29,19 @@ export type RunCoreWithPersistenceOutput = RunCoreOnceOutput & {
 };
 
 function countDigestContributions(out: any): number {
-  const ran = out?.debug?.satellites?.ran;
-  if (!Array.isArray(ran)) return 0;
+  const facts = Array.isArray(out?.validatedFacts) ? out.validatedFacts : [];
 
-  let n = 0;
-  for (const r of ran) {
-    if (r && r.digest_only && typeof r.digest_only === "object") n += 1;
+  for (const f of facts) {
+    if (f?.key !== "doc:summary") continue;
+
+    const extractorId = f?.meta?.extractorId;
+    if (extractorId !== "document_understanding.v1") continue;
+
+    // bounded: pro Run max 1 Contribution
+    return 1;
   }
-  return n;
+
+  return 0;
 }
 
 export async function runCoreWithPersistence(
@@ -47,28 +52,28 @@ export async function runCoreWithPersistence(
   const out = await runCoreOnce(input);
   const digestContribCount = countDigestContributions(out);
 
-  const satellitesOff =
-  Array.isArray(input.extractorIds) && input.extractorIds.length === 0;
+  const extractorsOff =
+    Array.isArray(input.extractorIds) && input.extractorIds.length === 0;
 
-  // HARD CONTRACT: satellites OFF => out must behave as if no extractors ran
-if (satellitesOff) {
-  // validatedFacts must be empty for Phase 2 golden test + contract clarity
-  (out as any).validatedFacts = [];
+  // HARD CONTRACT: extractors OFF => out must behave as if no extractors ran
+  if (extractorsOff) {
+    // validatedFacts must be empty for Phase 2 golden test + contract clarity
+    (out as any).validatedFacts = [];
 
-  // optional: if runCoreOnce tracks extractor runs in `ran`, clear it too
-  if (Array.isArray((out as any).ran)) {
-    (out as any).ran = [];
+    // optional: if runCoreOnce tracks extractor runs in `ran`, clear it too
+    if (Array.isArray((out as any).ran)) {
+      (out as any).ran = [];
+    }
+
+    // keep debug consistent with contract
+    if (out && typeof (out as any).debug === "object" && (out as any).debug) {
+      (out as any).debug.validatedFactsCount = 0;
+      (out as any).debug.extractedFactsCount = 0;
+    }
   }
 
-  // keep debug consistent with contract
-if (out && typeof (out as any).debug === "object" && (out as any).debug) {
-  (out as any).debug.validatedFactsCount = 0;
-  (out as any).debug.extractedFactsCount = 0;
-}
-}
-
 // HARD CONTRACT: satellites OFF => NEVER plan fact writes
-const factsPlannedCount = satellitesOff ? 0 : (out.validatedFacts?.length ?? 0);
+const factsPlannedCount = extractorsOff ? 0 : (out.validatedFacts?.length ?? 0);
   const hasHaltungPatch = hasAnyKeys(out.haltungDelta?.patch);
 
   const writePlan: CoreWritePlanV1 = {

@@ -4,7 +4,7 @@
 // - Deterministic + bounded
 // - Aggregates digest_only contributions per dayBucket
 
-import type { DailyDigestContributionV1 } from "../satellites/document-understanding/digest/dailyDigestPlan";
+import type { DailyDigestContributionV1 } from "./dailyDigestTypes";
 
 export type DailyDigestAggregateV1 = {
   version: 1;

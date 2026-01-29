@@ -27,7 +27,6 @@ const { runCoreWithPersistence } = require("./lib/core/runCoreWithPersistence");
       locale: "de-DE",
       facts: [],
       haltung: undefined,
-      satelliteIds: ["document-understanding.v1"],
       tier: "pro"
     }
   });

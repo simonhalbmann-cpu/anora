@@ -17,7 +17,7 @@ export type SatelliteRunFn = (
 ) => Promise<SatelliteOutput> | SatelliteOutput;
 
 export type SatelliteDefinition = {
-  satelliteId: string; // z.B. "document-understanding.v1"
+  satelliteId: string;
   version: string;     // z.B. "1.0.0" oder "2026-01-09"
   run: SatelliteRunFn;
 };

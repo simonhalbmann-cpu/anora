@@ -31,9 +31,9 @@ export type FactMetaV1 = {
   override?: boolean;
   finality?: FactFinality;
 
-  // Satelliten
+  // Herkunft (Core)
   extractorId?: string;
-  satelliteId?: string;
+  
 
   // Zeit
   temporal?: "past" | "present" | "future" | "unknown";
@@ -74,11 +74,6 @@ export function normalizeFactMeta(
       typeof meta.extractorId === "string"
         ? meta.extractorId
         : fallback?.extractorId,
-
-    satelliteId:
-      typeof meta.satelliteId === "string"
-        ? meta.satelliteId
-        : fallback?.satelliteId,
 
     temporal:
       meta.temporal === "past" ||

@@ -15,7 +15,6 @@ async function runOne(params: { userId: string; tier: "free" | "pro"; text: stri
       locale: "de-DE",
       facts: [],
       haltung: undefined,
-      satelliteIds: ["document-understanding.v1"],
       tier: params.tier,
     },
   });

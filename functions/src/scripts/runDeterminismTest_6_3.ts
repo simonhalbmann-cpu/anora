@@ -16,6 +16,8 @@
 
 import assert from "assert";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import { runCoreOnce } from "../core/runCoreOnce";
 import { stableStringify } from "../core/utils/stableStringify";
 
@@ -34,15 +36,30 @@ async function runOnce(label: string, tier: "free" | "pro") {
     text: "Mietvertrag für Wohnung in Berlin. Kaltmiete 950 EUR.",
     extractorIds: [], // wichtig: keine Extractors → Fokus Satellite + Digest
     state: {
-      locale: "de-DE",
-      facts: [],
-      tier,
-      satelliteIds: ["document-understanding.v1"],
-    },
+  locale: "de-DE",
+  facts: [],
+  tier,
+  now: 1700000000000,
+},
   };
 
   const out1 = await runCoreOnce(input as any);
   const out2 = await runCoreOnce(input as any);
+
+  const s1 = stableStringify(out1);
+  const s2 = stableStringify(out2);
+
+  const dir = path.join(process.cwd(), "_debug_determinism");
+  fs.mkdirSync(dir, { recursive: true });
+
+  const p1 = path.join(dir, `${label}_1.json`);
+  const p2 = path.join(dir, `${label}_2.json`);
+
+  fs.writeFileSync(p1, s1, "utf8");
+  fs.writeFileSync(p2, s2, "utf8");
+
+  console.log(`[${label}] wrote:`, p1, p2);
+  console.log(`[${label}] len1/len2:`, s1.length, s2.length);
 
   const h1 = hashOut(out1);
   const h2 = hashOut(out2);
@@ -56,15 +73,16 @@ async function runOnce(label: string, tier: "free" | "pro") {
     `[${label}] NON-DETERMINISTIC: hash mismatch\n${h1}\n${h2}`
   );
 
-  // 2) Satellites müssen gelaufen sein
-  const ran = out1?.debug?.satellites?.ran;
-  assert.ok(Array.isArray(ran), `[${label}] satellites.ran missing`);
-  assert.ok(ran.length === 1, `[${label}] expected exactly 1 satellite run`);
-
-  // 3) Digest contribution vorhanden (DATA ONLY)
-  const digest = ran[0]?.digest_only;
-  assert.ok(digest, `[${label}] digest_only missing`);
-  assert.equal(digest.version, 1, `[${label}] digest version mismatch`);
+  // 2) Extractors sind AUS → es darf KEINE validatedFacts geben
+  assert.ok(
+    Array.isArray(out1?.validatedFacts),
+    `[${label}] validatedFacts missing`
+  );
+  assert.equal(
+    out1.validatedFacts.length,
+    0,
+    `[${label}] expected validatedFacts to be empty when extractorIds=[]`
+  );
 
   // 4) Bounded output (keine Explosion)
   const size = stableStringify(out1).length;

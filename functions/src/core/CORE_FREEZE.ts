@@ -13,7 +13,7 @@ export const FROZEN = {
   "doc:summary",
 ] as const,
   domains: ["real_estate", "generic"] as const,
-  extractors: ["real_estate.v1"] as const,
+  extractors: ["real_estate.v1", "document_understanding.v1"] as const,
 } as const;
 
 export type FrozenFactKey = (typeof FROZEN.factKeys)[number];

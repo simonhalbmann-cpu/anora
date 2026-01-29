@@ -5,8 +5,8 @@
  * Goal:
  * - Two identical ingests produce bit-identical outputs (stableStringify equal)
  * - Cover both modes:
- *   A) extractorIds=["real_estate.v1"]  (satellites ON)
- *   B) extractorIds=[]                 (satellites OFF)
+ *   A) extractorIds=["real_estate.v1"]  (extractors ON)
+ *   B) extractorIds=[]                 (extractors OFF)
  *
  * This test is "HTTP-NAH" but without HTTP:
  * It runs runCoreWithPersistence(dryRun=true) directly.
@@ -101,7 +101,7 @@ async function runCase(params: {
 async function main() {
   console.log("▶ PHASE 1 FINAL: Determinism (bitidentical) test");
 
-  // Case A: Satellites ON (explicit extractor)
+  // Case A: Extractors ON (explicit extractor)
   await runCase({
     name: "A_ON_real_estate.v1",
     userId: "det-proof-user",
@@ -109,7 +109,7 @@ async function main() {
     extractorIds: ["real_estate.v1"],
   });
 
-  // Case B: Satellites OFF (no extractors)
+  // Case B: Extractors OFF (no extractors)
   await runCase({
     name: "B_OFF_no_extractors",
     userId: "det-proof-user",

@@ -934,7 +934,7 @@ deps.logger?.info?.("api_chat_text_len", { len: text.length, useSatellite: effec
         try {
           facts = (await deps.readFacts(userId)).map((f) => ({
   ...f,
-  meta: normalizeFactMeta(f.meta ?? {}, f.meta?.satelliteId ?? "unknown"),
+  meta: normalizeFactMeta((f.meta ?? {}) as any),
 }));
         } catch {
           facts = [];

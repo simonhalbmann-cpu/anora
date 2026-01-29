@@ -2,9 +2,9 @@
 // PHASE 6.3 – impure executor (the ONLY place that writes)
 
 import admin from "firebase-admin";
+import type { DailyDigestContributionV1 } from "../meta/dailyDigestTypes";
 import { dayBucketUTC } from "../rawEvents/hash";
 import type { RunCoreOnceOutput } from "../runCoreOnce";
-import type { DailyDigestContributionV1 } from "../satellites/document-understanding/digest/dailyDigestPlan";
 import { sha256Hex } from "../utils/hash";
 import { stableStringify } from "../utils/stableStringify";
 import {
@@ -83,18 +83,43 @@ function digestMetaKeyForDay(dayBucket: string) {
 }
 
 function extractDigestContributions(out: RunCoreOnceOutput): DailyDigestContributionV1[] {
-  const ran = (out as any)?.debug?.satellites?.ran;
-  if (!Array.isArray(ran)) return [];
+  const facts = Array.isArray((out as any)?.validatedFacts) ? (out as any).validatedFacts : [];
+
+  // Tier kommt (wie früher beim Satellite) aus rawEvent.meta.tier
+  const tierRaw = (out as any)?.rawEvent?.doc?.meta?.tier;
+  const tier: "free" | "pro" = tierRaw === "pro" ? "pro" : "free";
 
   const res: DailyDigestContributionV1[] = [];
-  for (const r of ran) {
-    const d = r?.digest_only;
-    if (!d || typeof d !== "object") continue;
-    // minimal shape check (defensiv)
-    if (d.version === 1 && d.satelliteId === "document-understanding.v1" && d.counts && d.docTypes) {
-      res.push(d as DailyDigestContributionV1);
-    }
+
+  for (const f of facts) {
+    if (f?.key !== "doc:summary") continue;
+
+    const extractorId = (f as any)?.meta?.extractorId;
+    if (extractorId !== "document_understanding.v1") continue;
+
+    const v = (f as any)?.value ?? {};
+    const docType = typeof v?.docType === "string" && v.docType.trim() ? v.docType.trim() : "unknown";
+
+    const reasonCodesRaw = (f as any)?.meta?.reasonCodes;
+    const reasonCodes = Array.isArray(reasonCodesRaw) ? reasonCodesRaw.filter((x: any) => typeof x === "string") : [];
+
+    res.push({
+      version: 1,
+      extractorId: "document_understanding.v1",
+      tier,
+      counts: {
+        processedLocal: 1,
+        blockedByTier: tier === "pro" ? 0 : 1,
+        errors: 0,
+      },
+      docTypes: { [docType]: 1 },
+      reasonCodes: reasonCodes.slice(0, 6),
+    });
+
+    // bounded: pro Run maximal 1 Contribution
+    break;
   }
+
   return res;
 }
 

@@ -1,10 +1,10 @@
 // functions/src/scripts/runPhase6_1_ConfidenceTests.ts
 import { strict as assert } from "assert";
 
-import { scoreUnderstandingConfidence } from "../core/satellites/document-understanding/understanding/confidence";
-import type { DocTypeResult } from "../core/satellites/document-understanding/understanding/docType";
-import type { SignalsResult } from "../core/satellites/document-understanding/understanding/signals";
-import type { StructureResult } from "../core/satellites/document-understanding/understanding/structure";
+import { scoreUnderstandingConfidence } from "../core/satellites/_deprecated/document-understanding/understanding/confidence";
+import type { DocTypeResult } from "../core/satellites/_deprecated/document-understanding/understanding/docType";
+import type { SignalsResult } from "../core/satellites/_deprecated/document-understanding/understanding/signals";
+import type { StructureResult } from "../core/satellites/_deprecated/document-understanding/understanding/structure";
 
 function mkDocType(docType: any, confidence: number): DocTypeResult {
   return {

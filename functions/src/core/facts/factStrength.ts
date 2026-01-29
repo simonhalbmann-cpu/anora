@@ -35,8 +35,6 @@ export type FactStrengthInputV1 = {
   // 7) Ist dieser Fakt als „neuester Stand“ markiert?
   latest: boolean;
 
-  // 8) Satellit (nur zur Nachvollziehbarkeit, NICHT zur Bewertung)
-  satelliteId: string;
 };
 
 // --------------------------------------------------

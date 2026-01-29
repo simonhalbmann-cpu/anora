@@ -58,7 +58,7 @@ export type SatelliteRawEvent = {
 
 /** Input given to every satellite (standardized) */
 export type SatelliteInput = {
-  satelliteId: string;            // filled by core (safety/observability)
+  satelliteId: string;
   userId: string;                 // stable user scope
   channel: InputChannel;
 

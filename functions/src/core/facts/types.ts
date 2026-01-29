@@ -2,6 +2,7 @@
 // Roadmap 3.1: Core Fact Types + Extractor Interface (domain-agnostisch)
 
 import type { EntityDomain, EntityType } from "../entities/types";
+import type { FactMetaV1 } from "./factMeta";
 
 export type FactValue =
   | string
@@ -57,7 +58,7 @@ supersededByFactId?: string;   // neue (aktuelle) factId
   createdAt: number;
   updatedAt: number;
 
-  meta?: Record<string, any>;
+  meta?: Partial<FactMetaV1> & Record<string, any>;
 };
 
 export type FactInput =

@@ -1,7 +1,7 @@
 // functions/src/scripts/runPhase6_1_DocTypeTests.ts
 import { strict as assert } from "assert";
 
-import { classifyDocType } from "../core/satellites/document-understanding/understanding/docType";
+import { classifyDocType } from "../core/satellites/_deprecated/document-understanding/understanding/docType";
 
 function runSameInputTwice(input: Parameters<typeof classifyDocType>[0]) {
   const a = classifyDocType(input);

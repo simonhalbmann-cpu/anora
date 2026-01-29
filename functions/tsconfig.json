@@ -16,6 +16,6 @@
   },
   "compileOnSave": true,
   "include": ["src"],
-  "exclude": ["src/prompt/deprecated"],
+  "exclude": ["src/prompt/deprecated", "src/core/satellites/_deprecated"],
   "extends": "expo/tsconfig.base"
 }
