@@ -1,5 +1,5 @@
-// functions/src/core/facts/store.ts
-// Roadmap 3.3: FactStore (Firestore) – minimal, stabil, domain-agnostisch
+﻿// functions/src/core/facts/store.ts
+// Roadmap 3.3: FactStore (Firestore) â€“ minimal, stabil, domain-agnostisch
 
 import { createHash } from "crypto";
 import { logger } from "firebase-functions/v2";
@@ -120,7 +120,7 @@ if (!entityId) {
       const domain = toEntityDomain(rawDomain);
       const validityWindow = f.validity ?? undefined;
 
-      // 3.7: Key normalisieren (Registry) – VOR FactId/Conflict
+      // 3.7: Key normalisieren (Registry) â€“ VOR FactId/Conflict
       const key = normalizeFactKey(f.key, domain, f.meta);
       if (!key) {
         skipped++;
@@ -144,7 +144,7 @@ if (!entityId) {
           ? f.sourceRef.trim()
           : "";
 
-      // 🔒 PHASE 1.1.1 latest-only contract (hart)
+      // ðŸ”’ PHASE 1.1.1 latest-only contract (hart)
       if (isLatest) {
         if (!sourceRef) {
           skipped++;
@@ -190,7 +190,7 @@ if (sourceRef) {
     key,
     value: normalizedValue,
     source: f.source ?? "other",
-    sourceRef,        // bei latest:true überschreiben wir damit "zuletzt gesehen"
+    sourceRef,        // bei latest:true Ã¼berschreiben wir damit "zuletzt gesehen"
     createdAt: now,   // ok, weil merge:true; wenn du willst kann man createdAt stabilisieren, aber erstmal minimal
   };
 
@@ -213,7 +213,7 @@ if (sourceRef) {
         source: f.source ?? "other",
         conflict,
 
-        // createdAt/updatedAt werden später NOOP-sicher gesetzt
+        // createdAt/updatedAt werden spÃ¤ter NOOP-sicher gesetzt
         createdAt: typeof f.createdAt === "number" ? f.createdAt : now,
         updatedAt: now,
 
@@ -237,7 +237,7 @@ if (sourceRef) {
       }
     }
 
-    // 3) NOOP-Check + Schreiben nur wenn geändert
+    // 3) NOOP-Check + Schreiben nur wenn geÃ¤ndert
     const writeNow = Date.now();
     for (const p of pending) {
       const prev = existingById.get(p.ref.id) ?? null;
@@ -262,7 +262,7 @@ if (sourceRef) {
       }
 
       // Phase 1.1.2 minimal Supersede:
-// Nur für NICHT-latest Facts (value-based IDs).
+// Nur fÃ¼r NICHT-latest Facts (value-based IDs).
 const isLatest =
   !!(nextDoc.meta && typeof nextDoc.meta === "object" && (nextDoc.meta as any).latest === true);
 
@@ -280,7 +280,7 @@ if (!isLatest) {
     const data: any = d.data() || {};
     const already = data.isSuperseded === true;
 
-    // ältere Docs ohne isSuperseded gelten als aktiv
+    // Ã¤ltere Docs ohne isSuperseded gelten als aktiv
     if (!already) {
       batch.set(
         d.ref,
@@ -308,40 +308,3 @@ upserted++;
   return { upserted, skipped, evidenceAttempted };
 }
 
-export type FactQuery = {
-  entityId?: string;
-  key?: string;
-  domain?: string;
-  limit?: number;
-};
-
-// Minimal-Query: entityId/key/domain filtern (einfach, kein Volltext)
-export async function queryFacts(
-  userId: string,
-  q: FactQuery
-): Promise<{ id: string; data: FactDoc }[]> {
-  const col = factsCol(userId);
-
-  let ref: FirebaseFirestore.Query = col;
-
-  if (q.entityId) {
-    ref = ref.where("entityId", "==", q.entityId);
-  }
-  if (q.key) {
-    ref = ref.where("key", "==", q.key);
-  }
-  if (q.domain) {
-    ref = ref.where("domain", "==", q.domain);
-  }
-
-  ref = ref.orderBy("factId", "asc");
-
-  const limit = typeof q.limit === "number" && q.limit > 0 ? q.limit : 50;
-  ref = ref.limit(Math.min(limit, 200));
-
-  const snap = await ref.get();
-
-const items = snap.docs.map((d) => ({ id: d.id, data: d.data() as FactDoc }));
-
-return items;
-}

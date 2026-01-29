@@ -129,8 +129,6 @@ function parseCountToken(raw: string): number | null {
 const WORD_NUM_TOKEN = String.raw`(?:[0-9]{1,3}|ein|eine|einen|einem|einer|eins|ain|eim|zwei|zwo|zweii|zwai|drei|dreii|dreie|drie|vier|vire|vierr|fünf|funf|fuenf|fuf|fuff|sechs|sech|sechss|sex|sieben|sibn|siebn|acht|ach|achtt|neun|neu|neunn|zehn|zehen|zehnn|elf|ellf|zwölf|zwolf|zwoelf|zwölff)`;
 
 // true/false bleibt praktisch für schnelle Checks
-const hasCommercialUnit = COMMERCIAL_RE.test(normalizedText);
-
 // Zählt z.B.:
 // "2 Garagen", "1 Stellplatz", "3 Lager", "2 Gewerbeeinheiten", "4 Shops"
 function countCommercialUnits(text: string): number {
@@ -187,8 +185,6 @@ function matchNumber(re: RegExp): number | null {
     const lastDot = normalized.lastIndexOf(".");
     const lastComma = normalized.lastIndexOf(",");
     const decPos = Math.max(lastDot, lastComma);
-    const decChar = normalized[decPos];
-
     const intPart = normalized.slice(0, decPos).replace(/[.,]/g, "");
     const fracPart = normalized.slice(decPos + 1).replace(/[.,]/g, "");
     normalized = intPart + "." + fracPart; // Dezimal immer als Punkt

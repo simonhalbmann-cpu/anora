@@ -21,16 +21,6 @@ function clampInt(n: any, fallback: number): number {
   return Math.max(0, x);
 }
 
-function listLastDayBucketsUTC(days: number, nowMs: number): string[] {
-  const n = Math.max(1, Math.min(31, clampInt(days, 7))); // bounded
-  const buckets: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const ms = nowMs - i * 24 * 60 * 60 * 1000;
-    buckets.push(dayBucketUTC(ms));
-  }
-  return buckets;
-}
-
 function digestKeyForDay(dayBucket: string): string {
   return `dailyDigest_v1__${dayBucket}`;
 }

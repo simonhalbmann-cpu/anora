@@ -165,7 +165,6 @@ export type ContractViolation = {
 };
 
 export function validateSatelliteProposedFacts(
-  satelliteId: string,
   facts: Array<{
     domain?: any;
     key?: any;

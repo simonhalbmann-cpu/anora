@@ -68,8 +68,8 @@ export type DebugScore = {
 // --------------------------------------------------
 
 export function resolveCandidates(
-  entityId: string,
-  key: string,
+  _entityId: string,
+  _key: string,
   candidates: FactDoc[]
 ): ResolveResult {
   if (candidates.length === 0) {

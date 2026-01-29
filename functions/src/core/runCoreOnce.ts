@@ -325,9 +325,6 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
   const text = String(input?.text ?? "");
   const locale = String(input?.state?.locale ?? "de-DE");
 
-  const tierRaw = input?.state?.tier;
-  const tier: "free" | "pro" = tierRaw === "pro" ? "pro" : "free";
-
   // Phase 6.1: [] means none, undefined means default(all)
   const extractorIds = Array.isArray(input?.extractorIds)
     ? input.extractorIds
