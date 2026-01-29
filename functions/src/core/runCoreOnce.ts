@@ -1,6 +1,6 @@
-// functions/src/core/runCoreOnce.ts
+﻿// functions/src/core/runCoreOnce.ts
 /**
- * PHASE 6.1 – Pure Core Entry
+ * PHASE 6.1 â€“ Pure Core Entry
  * - Pure: no Firestore, no writes, no side effects
  * - Deterministic: same input => same output
  *
@@ -64,7 +64,7 @@ export type RunCoreOnceInput = {
   }[];
   haltung?: CoreHaltungV1;
 
-  // ✅ NEU
+  // âœ… NEU
   tier?: "free" | "pro";
 };
 
@@ -102,11 +102,11 @@ export type RunCoreOnceOutput = {
 
   factsDiff: {
   new: string[];
-  updated: string[];  // ✅ NEU: existiert, aber Inhalt anders
+  updated: string[];  // âœ… NEU: existiert, aber Inhalt anders
   ignored: string[];
 };
 
-// Optional, aber extrem hilfreich fürs Debugging & spätere History:
+// Optional, aber extrem hilfreich fÃ¼rs Debugging & spÃ¤tere History:
 factsChanges?: {
   factId: string;
   kind: "new" | "updated" | "ignored";
@@ -337,11 +337,14 @@ export async function runCoreOnce(input: RunCoreOnceInput): Promise<RunCoreOnceO
   const hBefore = normalizeHaltungPure(input?.state?.haltung);
 
   // 1) Build in-memory RawEvent (deterministic)
-  const timestamp =
+// If caller provides state.now we use it (for reproducible simulations/tests).
+// Otherwise we freeze to 0 to keep runCoreOnce bit-identical.
+const timestamp =
   typeof (input as any)?.state?.now === "number"
     ? Math.floor((input as any).state.now)
-    : Date.now();
-  const ingestHash = sha256(`${userId}::${locale}::${text}`);
+    : 0;
+
+const ingestHash = sha256(`${userId}::${locale}::${text}`);
   const rawEventId = sha256(`rawEvent::${ingestHash}`);
 
   const rawEventDoc: RawEventDoc = {
@@ -455,7 +458,7 @@ for (const f of extractedFacts) {
   validatedFacts.push(vf);
 }
 
-// 3.5) Phase 4.2 — user overrides document (pure)
+// 3.5) Phase 4.2 â€” user overrides document (pure)
 // Rule: if a user_claim exists for same (entityId,key) and value differs,
 // mark the non-user fact as conflict=true and emit debug conflict events.
 // No writes, no chat output.
@@ -501,7 +504,7 @@ const finalFacts = validatedFactsWithConflicts;
 validatedFacts.length = 0;
 validatedFacts.push(...validatedFactsWithConflicts);
 
-  // 4) factsDiff (pure) — NEW vs UPDATED vs IGNORED
+  // 4) factsDiff (pure) â€” NEW vs UPDATED vs IGNORED
 const diffNew: string[] = [];
 const diffUpdated: string[] = [];
 const diffIgnored: string[] = [];
@@ -604,3 +607,4 @@ for (const f of finalFacts) {
   },
 };
 }
+

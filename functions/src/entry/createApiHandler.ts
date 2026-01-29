@@ -1,4 +1,4 @@
-import type { Request, Response } from "express";
+﻿import type { Request, Response } from "express";
 import { getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
@@ -75,7 +75,7 @@ function requireDevAccessOr403(req: Request, res: Response): boolean {
 
     const token = readToken(req, "x-dev-secret", "devSecret");
 
-    // Emulator: wenn kein Secret gesetzt ist -> erlauben (bequem fürs lokale Entwickeln)
+    // Emulator: wenn kein Secret gesetzt ist -> erlauben (bequem fÃ¼rs lokale Entwickeln)
     if (isEmulator() && !secret) return true;
 
     // PROD (oder Emulator mit gesetztem Secret): Secret muss existieren
@@ -121,7 +121,7 @@ async function requireUserAuthOr401(req: Request, res: Response): Promise<{ uid:
       return null;
     }
 
-    // ✅ Emulator-Fallback: unsignierte Emulator-Tokens (alg=none, endet mit ".") akzeptieren
+    // âœ… Emulator-Fallback: unsignierte Emulator-Tokens (alg=none, endet mit ".") akzeptieren
     // WICHTIG: nur im Emulator erlauben!
     if (isEmulator()) {
       try {
@@ -335,7 +335,7 @@ if (path === "/anoraConflictsResolve") {
   const docId = `conflict_v1__${entityId}__${key}`;
   const ref = adminDb.doc(`brain/${userId}/meta/${docId}`);
 
-  // Markiere als resolved (wir löschen nichts!)
+  // Markiere als resolved (wir lÃ¶schen nichts!)
   await ref.set(
     {
       status: "resolved",
@@ -353,7 +353,7 @@ if (path === "/anoraConflictsResolve") {
 
 const factsCol = adminDb.collection(`brain/${userId}/facts`);
 
-// gewählten Fact laden (Quelle für value)
+// gewÃ¤hlten Fact laden (Quelle fÃ¼r value)
 const chosenSnap = await factsCol.doc(chosenFactId).get();
 if (!chosenSnap.exists) {
   res.status(404).json({ ok: false, error: "Chosen fact not found" });
@@ -363,7 +363,7 @@ if (!chosenSnap.exists) {
 const chosenFact = chosenSnap.data() as any;
 const now = Date.now();
 
-// neuer Override-Fact (löscht nichts!)
+// neuer Override-Fact (lÃ¶scht nichts!)
 const overrideFact = {
   factId: `user_override__${chosenFactId}__${now}`,
   entityId,
@@ -450,7 +450,7 @@ if (path === "/anoraPresenceAction") {
     return;
   }
 
-  // TODO: später echte Action-Logik
+  // TODO: spÃ¤ter echte Action-Logik
   res.status(200).json({ ok: true });
   return;
 }
@@ -524,7 +524,7 @@ const presence = presenceRaw
   }
 }
 
-// Für NICHT-auth Endpoints (Chat/Dev/Reset etc.)
+// FÃ¼r NICHT-auth Endpoints (Chat/Dev/Reset etc.)
 const bodyUserId = asString(body?.userId).trim();
 // ------------------------------------------------------------
 // Ab hier: alle anderen Endpoints brauchen userId im Body
@@ -613,7 +613,7 @@ if (path === "/devListFacts") {
 
   const facts = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
 
-  // DEBUG: Doppel-Keys pro entityId sichtbar machen
+// DEBUG: Doppel-Keys pro entityId sichtbar machen
   const counts: Record<string, number> = {};
   for (const f of facts as any[]) {
     const key = String(f?.key ?? "?");
@@ -730,7 +730,7 @@ if (path === "/devSeedDigest") {
       version: 1,
       kind: "dailyDigest_v1",
       createdAt: now,
-      message: "DEV DIGEST: Test-Digest für UI (Presence-Karte).",
+      message: "DEV DIGEST: Test-Digest fÃ¼r UI (Presence-Karte).",
       source: "devSeedDigest",
     },
     { merge: true }
@@ -801,7 +801,7 @@ if (!hasDevAccess(req)) {
 }
 
   // -------------------------
-// A) Facts löschen (Core + Ingest)
+// A) Facts lÃ¶schen (Core + Ingest)
 // -------------------------
 const coreFactsCol = adminDb.collection(`brain/${userId}/facts`);
 const coreFactsSnap = await coreFactsCol.get();
@@ -814,7 +814,7 @@ const ingestFactRefs = ingestFactsSnap.docs.map((d) => d.ref);
 const factRefs = [...coreFactRefs, ...ingestFactRefs];
 
   // -------------------------
-  // B) Meta löschen (Digest + Presence)
+  // B) Meta lÃ¶schen (Digest + Presence)
   // -------------------------
   const metaCol = adminDb.collection(`brain/${userId}/meta`);
   const metaSnap = await metaCol.get();
@@ -873,7 +873,7 @@ if (!hasDevAccess(req)) {
     return;
   }
 }
-        // Beispiel: haltung doc löschen, falls du es so speicherst
+        // Beispiel: haltung doc lÃ¶schen, falls du es so speicherst
         await adminDb.doc(`brain/${userId}/meta/haltung`).delete().catch(() => null);
         res.status(200).json({ ok: true });
         return;
@@ -883,11 +883,11 @@ if (!hasDevAccess(req)) {
 
       const useSatellite = body?.useSatellite === true; // default false
 
-      // 🔧 INGEST-SWITCH (minimal): Wenn Text mit "INGEST:" startet -> Brain AUS
+      // ðŸ”§ INGEST-SWITCH (minimal): Wenn Text mit "INGEST:" startet -> Brain AUS
 const isIngest = text.startsWith("INGEST:");
 const effectiveUseSatellite = isIngest ? false : useSatellite;
 
-      const MAX_USER_MESSAGE = 4000; // Phase A: fix. Später evtl. config/env.
+      const MAX_USER_MESSAGE = 4000; // Phase A: fix. SpÃ¤ter evtl. config/env.
 
 const textForBrain = truncateTailOnly(text, MAX_USER_MESSAGE);
 
@@ -987,7 +987,7 @@ const dryRun = Boolean(body?.dryRun);
         safeParseAssistantJson: deps.safeParseAssistantJson,
 
         fallbackCopy: {
-          invalidJson: "Antwort war kein gültiges JSON.",
+          invalidJson: "Antwort war kein gÃ¼ltiges JSON.",
           genericError: "Es ist ein Fehler passiert.",
         },
       } as const;
@@ -996,7 +996,10 @@ const dryRun = Boolean(body?.dryRun);
       const out = await runCoreWithPersistence(input);
 
       // --- server-side knowledge summary for Brain (active facts only) ---
-const factsForSummary = Array.isArray((input.state as any)?.facts) ? (input.state as any).facts : [];
+const factsForSummary = Array.isArray((out as any)?.validatedFacts)
+  ? (out as any).validatedFacts
+  : (Array.isArray((input.state as any)?.facts) ? (input.state as any).facts : []);
+
 const knowledgeSummary = factsForSummary.slice(0, 30).map((f: any) => ({
   key: f.key,
   value: f.value,
@@ -1004,7 +1007,7 @@ const knowledgeSummary = factsForSummary.slice(0, 30).map((f: any) => ({
   entityId: f.entityId,
 }));
 
-// 🔒 HARTE TRENNUNG: Ingest / Golden Test = KEIN Brain
+// ðŸ”’ HARTE TRENNUNG: Ingest / Golden Test = KEIN Brain
 if (!effectiveUseSatellite) {
   const isIngest = text.startsWith("INGEST:");
   res.status(200).json({
@@ -1064,4 +1067,7 @@ res.status(200).json({ ok: true, out, reply });
 }
   };
 }
+
+
+
 
