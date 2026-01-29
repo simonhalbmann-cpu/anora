@@ -1,4 +1,4 @@
-{
+﻿{
   "compilerOptions": {
     "ignoreDeprecations": "5.0",
     "skipLibCheck": true,
@@ -6,8 +6,8 @@
     "esModuleInterop": true,
     "moduleResolution": "nodenext",
     "noImplicitReturns": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noEmit": false,
     "outDir": "lib",
     "sourceMap": true,
@@ -16,6 +16,9 @@
   },
   "compileOnSave": true,
   "include": ["src"],
-  "exclude": ["src/prompt/deprecated", "src/core/satellites/_deprecated"],
+  "exclude": [
+    "src/prompt/deprecated",
+    "src/core/satellites/_deprecated",
+    "src/scripts"],
   "extends": "expo/tsconfig.base"
 }
