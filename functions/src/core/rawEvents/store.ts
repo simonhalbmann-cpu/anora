@@ -1,10 +1,9 @@
-// functions/src/core/rawEvents/store.ts
+﻿// functions/src/core/rawEvents/store.ts
 
 import admin from "firebase-admin";
 import type {
   RawEventDoc,
   RawEventProcessing,
-  RawEventSourceType,
 } from "./types";
 function getDb() {
   if (!admin.apps.length) {
@@ -13,26 +12,11 @@ function getDb() {
   return admin.firestore();
 }
 
-type ListOptions = {
-  userId: string;
-  from?: number;
-  to?: number;
-  sourceType?: RawEventSourceType;
-  limit?: number;
-};
+;
 
 function rawEventsCol(userId: string) {
   const db = getDb();
   return db.collection("brain").doc(userId).collection("rawEvents");
-}
-
-export async function appendRawEvent(
-  userId: string,
-  doc: RawEventDoc
-): Promise<string> {
-  const ref = rawEventsCol(userId).doc();
-  await ref.set(doc);
-  return ref.id;
 }
 
 export async function markRawEventRunStart(opts: {
@@ -135,26 +119,6 @@ export async function getRawEventById(
   return snap.exists ? (snap.data() as RawEventDoc) : null;
 }
 
-export async function listRawEvents(
-  opts: ListOptions
-): Promise<{ id: string; data: RawEventDoc }[]> {
-  const limit =
-    typeof opts.limit === "number"
-      ? Math.min(Math.max(opts.limit, 1), 200)
-      : 50;
-
-  let q: FirebaseFirestore.Query = rawEventsCol(opts.userId);
-
-  if (opts.sourceType) q = q.where("sourceType", "==", opts.sourceType);
-  if (typeof opts.from === "number") q = q.where("timestamp", ">=", opts.from);
-  if (typeof opts.to === "number") q = q.where("timestamp", "<=", opts.to);
-
-  q = q.orderBy("timestamp", "desc").limit(limit);
-
-  const snap = await q.get();
-  return snap.docs.map((d) => ({ id: d.id, data: d.data() as RawEventDoc }));
-}
-
 export async function patchRawEventProcessing(
   userId: string,
   rawEventId: string,
@@ -168,3 +132,7 @@ export async function patchRawEventProcessing(
 
   await ref.set({ processing: patch } as any, { merge: true });
 }
+
+
+
+

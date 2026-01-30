@@ -1,8 +1,8 @@
-// functions/src/core/persistence/firestoreExecutorV1.ts
+﻿// functions/src/core/persistence/firestoreExecutorV1.ts
 import admin from "firebase-admin";
 
 // WICHTIG: kein admin.firestore() auf Top-Level!
-// Sonst crasht/hängt es beim Import, bevor index.ts initializeApp() ausführt.
+// Sonst crasht/hÃ¤ngt es beim Import, bevor index.ts initializeApp() ausfÃ¼hrt.
 
 function getDb() {
   // defensiv: falls jemand diese Datei jemals ohne index.ts benutzt
@@ -37,6 +37,4 @@ export function evidenceRef(userId: string, evidenceId: string) {
   return coreUserRoot(userId).collection("evidence_v1").doc(evidenceId);
 }
 
-export function supersedesRef(userId: string, factId: string) {
-  return coreUserRoot(userId).collection("supersedes_v1").doc(factId);
-}
+

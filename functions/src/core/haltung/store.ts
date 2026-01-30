@@ -49,26 +49,3 @@ export async function getOrCreateCoreHaltungV1(userId: string): Promise<CoreHalt
   logger.info("core_haltung_created_v1", { userId });
   return created;
 }
-
-// 2) Patch (nur numerische Updates, 0..1)
-export async function patchCoreHaltungV1(
-  userId: string,
-  patch: Partial<Omit<CoreHaltungV1, "version" | "updatedAt">>
-): Promise<CoreHaltungV1> {
-  const current = await getOrCreateCoreHaltungV1(userId);
-
-  const next: CoreHaltungV1 = {
-    version: 1,
-    directness: patch.directness !== undefined ? clamp01(patch.directness, current.directness) : current.directness,
-    interventionDepth: patch.interventionDepth !== undefined ? clamp01(patch.interventionDepth, current.interventionDepth) : current.interventionDepth,
-    patience: patch.patience !== undefined ? clamp01(patch.patience, current.patience) : current.patience,
-    escalationThreshold: patch.escalationThreshold !== undefined ? clamp01(patch.escalationThreshold, current.escalationThreshold) : current.escalationThreshold,
-    reflectionLevel: patch.reflectionLevel !== undefined ? clamp01(patch.reflectionLevel, current.reflectionLevel) : current.reflectionLevel,
-    updatedAt: Date.now(),
-  };
-
-  await haltungDocRef(userId).set(next, { merge: true });
-
-  logger.info("core_haltung_patched_v1", { userId });
-  return next;
-}

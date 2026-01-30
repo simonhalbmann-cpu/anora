@@ -1,8 +1,6 @@
-// functions/src/core/satellites/registryBootstrap.ts
-// DEPRECATED: Satellites werden nicht mehr über runCoreOnce gebootstrapped.
-// LLMBrain (wenn überhaupt) wird separat angebunden.
-// Diese Datei bleibt nur als bewusstes "Stoppschild", damit niemand es wieder einführt.
+﻿// functions/src/core/satellites/registryBootstrap.ts
+// DEPRECATED: Satellites werden nicht mehr Ã¼ber runCoreOnce gebootstrapped.
+// LLMBrain (wenn Ã¼berhaupt) wird separat angebunden.
+// Diese Datei bleibt nur als bewusstes "Stoppschild", damit niemand es wieder einfÃ¼hrt.
 
-export function bootstrapSatellites(): void {
-  // intentionally empty
-}
+

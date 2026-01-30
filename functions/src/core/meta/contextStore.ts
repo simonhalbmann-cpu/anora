@@ -1,10 +1,10 @@
-// functions/src/core/meta/contextStore.ts
+﻿// functions/src/core/meta/contextStore.ts
 
 import type { Firestore } from "firebase-admin/firestore";
 import * as logger from "firebase-functions/logger";
 
 // ------------------------------------------------------------
-// Generische Meta-Helper für brain/{userId}/meta/{key}
+// Generische Meta-Helper fÃ¼r brain/{userId}/meta/{key}
 // ------------------------------------------------------------
 export type MetaContextDoc = {
   updatedAt: number;
@@ -53,23 +53,4 @@ export async function getMetaContext(
   if (!snap.exists) return null;
 
   return snap.data() as MetaContextDoc;
-}
-
-export async function clearMetaContext(
-  db: Firestore,
-  userId: string,
-  key: string
-): Promise<void> {
-  const ref = db
-    .collection("brain")
-    .doc(userId)
-    .collection("meta")
-    .doc(key);
-
-  await ref.delete();
-
-  logger.info("meta_clear", {
-    userId,
-    metaKey: key,
-  });
 }
