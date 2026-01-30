@@ -1,7 +1,7 @@
 // functions/src/core/facts/runExtractor.ts
 // Roadmap 3.8: Generic Extractor Runner (RawEvent -> Facts -> FactStore)
 
-import { logger } from "firebase-functions/v2";
+import { logger } from "../logging/logger";
 import { getRawEventById } from "../rawEvents/store";
 import type { RawEventDoc } from "../rawEvents/types";
 import { getExtractor } from "./registry";

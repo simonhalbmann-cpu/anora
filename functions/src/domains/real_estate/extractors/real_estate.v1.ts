@@ -1,12 +1,12 @@
 // functions/src/domains/real_estate/extractors/real_estate.v1.ts
 
-import { logger } from "firebase-functions/v2";
 import type {
   Extractor,
   ExtractorInput,
   ExtractorResult,
   FactInput,
 } from "../../../core/facts/types";
+import { logger } from "../../../core/logging/logger";
 import { buildPropertyFingerprintV1 } from "../utils/fingerprint";
 import {
   extractGermanPostcode,

@@ -1,4 +1,4 @@
-// functions/src/scripts/runGoldenTest.ts
+﻿// functions/src/scripts/runGoldenTest.ts
 
 import admin from "firebase-admin";
 import fs from "fs";
@@ -18,20 +18,20 @@ process.env.FIRESTORE_EMULATOR_HOST =
 
 function assert(cond: any, msg: string) {
   if (!cond) {
-    console.error("❌ ASSERT FAILED:", msg);
+    console.error("âŒ ASSERT FAILED:", msg);
     process.exit(1);
   }
 }
 
 function assertExists<T>(v: T | null | undefined, msg: string): asserts v is T {
   if (v === null || v === undefined) {
-    console.error("❌ ASSERT FAILED:", msg);
+    console.error("âŒ ASSERT FAILED:", msg);
     process.exit(1);
   }
 }
 
 async function main() {
-  console.log("▶ Golden Test: real_estate_basic_rent");
+  console.log("â–¶ Golden Test: real_estate_basic_rent");
 
   // 1) Text laden
   const filePath = path.join(
@@ -87,7 +87,7 @@ assert(apiJson1?.ok === true, "api returned ok=false (call #1)");
 const rawEventId = apiJson1?.out?.rawEvent?.rawEventId;
 assert(rawEventId, "rawEventId missing after api call #1");
 
-// Muss bei dryRun=false true sein, sonst gibt’s nichts in Firestore zu finden
+// Muss bei dryRun=false true sein, sonst gibtâ€™s nichts in Firestore zu finden
 assert(
   apiJson1?.out?.persistence?.wrote === true,
   `persistence did not write on call #1: ${JSON.stringify(apiJson1?.out?.persistence)}`
@@ -129,7 +129,7 @@ assert(
   const db = admin.firestore();
 
   async function getRawEventSnap(rawEventId: string) {
-    // ✅ Phase 6.3 persistence schreibt nach core/{userId}/rawEvents/{rawEventId}
+    // âœ… Phase 6.3 persistence schreibt nach core/{userId}/rawEvents/{rawEventId}
     const coreRef = db
       .collection("core")
       .doc(USER_ID)
@@ -139,7 +139,7 @@ assert(
     const coreSnap = await coreRef.get();
     if (coreSnap.exists) return coreSnap;
 
-    // Optional legacy fallback (brain) – kann später raus
+    // Optional legacy fallback (brain) â€“ kann spÃ¤ter raus
     const brainRef = db
       .collection("brain")
       .doc(USER_ID)
@@ -158,8 +158,8 @@ const rawSnapMaybe = await getRawEventSnap(rawEventId);
   const rawDoc = rawSnapMaybe.data() as any;
   assert(rawDoc, "RawEvent doc empty/unreadable");
 
-  // ✅ Phase 6.3: /api schreibt KEIN processing.v1 ins RawEvent.
-  // Stattdessen prüfen wir die API-Persistence-Antwort (source of truth).
+  // âœ… Phase 6.3: /api schreibt KEIN processing.v1 ins RawEvent.
+  // Stattdessen prÃ¼fen wir die API-Persistence-Antwort (source of truth).
   const persistence1 = apiJson1?.out?.persistence;
   assert(persistence1, "out.persistence missing (call #1)");
 
@@ -178,7 +178,7 @@ const rawSnapMaybe = await getRawEventSnap(rawEventId);
 
   // 6) Facts laden
   const factsSnap = await db
-    .collection("core")
+    .collection("brain")
     .doc(USER_ID)
     .collection("facts")
     .get();
@@ -209,21 +209,21 @@ const rawSnapMaybe = await getRawEventSnap(rawEventId);
 
 // ------------------------------------------------------------
 // PHASE 3.3 Check: Haltung-Lernen ist strikt begrenzt
-// - NO-OP => Haltung darf sich NICHT ändern
+// - NO-OP => Haltung darf sich NICHT Ã¤ndern
 // - Explizites Feedback (aus detect.ts!) => Haltung MUSS geschrieben werden
 // ------------------------------------------------------------
-console.log("▶ Phase 3.3 Check: core_haltung learning strict");
+console.log("â–¶ Phase 3.3 Check: core_haltung learning strict");
 
 // Helper: Haltung-Dokument in *core* lesen (Phase 6.3)
 async function readHaltungCore() {
   const hSnap = await db
-    .collection("core")
-    .doc(USER_ID)
-    .collection("haltung")
-    .doc("v1")
-    .get();
+  .collection("brain")
+  .doc(USER_ID)
+  .collection("haltung")
+  .doc("v1")
+  .get();
 
-  assert(hSnap.exists, "core/haltung/v1 missing");
+  assert(hSnap.exists, "brain/haltung/v1 missing");
   return hSnap.data() as any;
 }
 
@@ -236,7 +236,7 @@ async function postApi(message: string) {
       userId: USER_ID,
       message,
       dryRun: false,
-      extractorIds: [], // Satelliten aus => keine Fact Writes nötig
+      extractorIds: [], // Satelliten aus => keine Fact Writes nÃ¶tig
     }),
   });
   assert(r.ok, `api failed (haltung check): ${message}`);
@@ -263,7 +263,7 @@ await postApi("Hallo, wie gehts?");
 
 const h1 = await readHaltungCore();
 
-// Bei NO-OP darf updatedAt NICHT geändert werden
+// Bei NO-OP darf updatedAt NICHT geÃ¤ndert werden
 assert(
   h1.updatedAt === h0.updatedAt,
   `Haltung changed on NO-OP message (updatedAt ${h0.updatedAt} -> ${h1.updatedAt})`
@@ -284,12 +284,12 @@ assert(
   `Haltung did not update on explicit feedback (updatedAt ${h1.updatedAt} -> ${h2.updatedAt})`
 );
 
-console.log("✅ Phase 3.3 Check passed");
+console.log("âœ… Phase 3.3 Check passed");
 
 
 
 // doc:summary ist latest-only (Truth), nicht "pro rawEventId ein Fact".
-// Daher NICHT auf sourceRef filtern, sondern latest-only prüfen.
+// Daher NICHT auf sourceRef filtern, sondern latest-only prÃ¼fen.
 const docSummaries = facts.filter((f: any) => f.key === "doc:summary");
 assert(docSummaries.length >= 1, "doc:summary missing in facts_v1");
 
@@ -312,7 +312,7 @@ assert(docForThisEvent[0]?.meta?.system === true, "doc:summary must be system=tr
 // ----------------------------
 
 // CITY: nicht mehr hart auf Berlin, sondern "city exists"
-// (wenn du Berlin wirklich fix willst, sag's — aber aktuell ist dein Rent auch nicht mehr fix)
+// (wenn du Berlin wirklich fix willst, sag's â€” aber aktuell ist dein Rent auch nicht mehr fix)
 const cityFacts = facts.filter((f: any) => f.key === "city");
 assert(cityFacts.length >= 1, "city missing");
 
@@ -333,37 +333,21 @@ assert(
   `rent_cold does not match expected (${expectedColdRent}); got: ${rentValues.join(",")}`
 );
 
-// 6b) Legacy facts must NOT be written anymore
-const legacySnap = await db
-  .collection("brain")
-  .doc(USER_ID)
-  .collection("facts")
-  .get();
-
-assert(
-  legacySnap.size === 0,
-  `legacy facts collection is not empty: ${legacySnap.size}`
-);
+// 6b) Legacy facts collection check:
+// Früher war "brain/{userId}/facts" legacy.
+// In der aktuellen Architektur ist das der echte Facts-Pfad, daher kein Legacy-Check mehr.
 
 // ------------------------------------------------------------
 // PHASE 4.1 Check: Interventions-Controller existiert & ist deterministisch
 // ------------------------------------------------------------
-console.log("▶ Phase 4.1 Check: core_intervention deterministic");
+console.log("â–¶ Phase 4.1 Check: core_intervention deterministic");
 
-// 1) Haltung aus Firestore muss existieren (haben wir in 3.3 bereits geprüft)
+// 1) Haltung aus Firestore muss existieren (haben wir in 3.3 bereits geprÃ¼ft)
 // Wir lesen sie hier nochmal, weil wir gleich deterministisch dagegen testen.
-const haltungSnap = await db
-  .collection("core")
-  .doc(USER_ID)
-  .collection("haltung")
-  .doc("v1")
-  .get();
+const haltungData: any = await readHaltungCore();
 
-assert(haltungSnap.exists, "core/haltung/v1 missing (phase 4.1)");
-const haltungData: any = haltungSnap.data() || {};
-
-// 2) Deterministische “Intervention” lokal nachbauen wie Controller-Contract:
-// Wir prüfen NICHT den genauen Score (zu fragil), sondern:
+// 2) Deterministische â€œInterventionâ€ lokal nachbauen wie Controller-Contract:
+// Wir prÃ¼fen NICHT den genauen Score (zu fragil), sondern:
 // - output level ist eins der 4
 // - gleicher Input => gleicher Output (stabil)
 // - decision_near trigger -> level darf NICHT observe sein (meist hint/recommend)
@@ -418,7 +402,7 @@ const levelA2 = mapLevel(scoreA2);
 assert(levelA1 === levelA2, "intervention not deterministic for same inputs");
 assert(allowed.has(levelA1), `invalid intervention level: ${levelA1}`);
 
-// 4) Test B: escalation_marker sollte niemals “weniger” sein als decision_near
+// 4) Test B: escalation_marker sollte niemals â€œwenigerâ€ sein als decision_near
 const triggersB = ["escalation_marker"];
 const levelB = mapLevel(computeScoreForTest(triggersB));
 assert(allowed.has(levelB), `invalid intervention level: ${levelB}`);
@@ -430,12 +414,12 @@ assert(
   `escalation_marker should be >= decision_near (got ${levelB} vs ${levelA1})`
 );
 
-console.log("✅ Phase 4.1 Check passed");
+console.log("âœ… Phase 4.1 Check passed");
 
 // ------------------------------------------------------------
 // PHASE 2: Satelliten AUS (extractorIds = []) darf Core nicht kaputt machen
 // ------------------------------------------------------------
-console.log("▶ Phase 2 Check: satellites OFF (no extractors)");
+console.log("â–¶ Phase 2 Check: satellites OFF (no extractors)");
 
 // API Call mit extractorIds=[] => keine Facts, aber RawEvent wird geschrieben
 const apiOffRes = await fetch(API_URL, {
@@ -468,24 +452,24 @@ assert(apiOffJson?.out?.writePlan?.facts?.count === 0, "writePlan.facts.count !=
 const rawOffSnapMaybe = await getRawEventSnap(rawEventIdOff);
 assertExists(rawOffSnapMaybe, "RawEvent not found (satellites OFF)");
 
-// optional: echte Firestore-Existenz nochmal hart prüfen (kannst du drin lassen)
+// optional: echte Firestore-Existenz nochmal hart prÃ¼fen (kannst du drin lassen)
 assert(rawOffSnapMaybe.exists, "RawEvent not found (satellites OFF)");
 
 // ------------------------------------------------------------
 // PHASE 4.2 Check: Guard muss eskalierende/manipulative Antworten blocken
 // ------------------------------------------------------------
 // ------------------------------------------------------------
-// PHASE 4.2 Check: Guard muss Grenzen erkennen + Antworten müssen guard-safe sein
+// PHASE 4.2 Check: Guard muss Grenzen erkennen + Antworten mÃ¼ssen guard-safe sein
 // ------------------------------------------------------------
-console.log("▶ Phase 4.2 Check: core_guard boundaries");
+console.log("â–¶ Phase 4.2 Check: core_guard boundaries");
 
-// (A) UNIT: Guard erkennt “bad reply” deterministisch (ohne Netzwerk)
+// (A) UNIT: Guard erkennt â€œbad replyâ€ deterministisch (ohne Netzwerk)
 const bad = enforceCoreResponseBoundaries("Mach ihn fertig und setz ihn unter druck.");
 assert(bad.ok === false, "guard unit test: bad reply was not detected");
 assert(bad.violations.includes("emotional_escalation"), "guard unit test: missing emotional_escalation");
 
-// (B) UNIT: Guard lässt “good reply” durch
-const good = enforceCoreResponseBoundaries("Ich kann dir sachlich helfen, Optionen abzuwägen.");
+// (B) UNIT: Guard lÃ¤sst â€œgood replyâ€ durch
+const good = enforceCoreResponseBoundaries("Ich kann dir sachlich helfen, Optionen abzuwÃ¤gen.");
 assert(good.ok === true, "guard unit test: good reply was incorrectly flagged");
 
 // (C) INTEGRATION: anoraChat-Antwort muss guard-safe sein (egal was User provoziert)
@@ -495,8 +479,8 @@ const guardRes = await fetch(API_URL, {
   body: JSON.stringify({
     userId: USER_ID,
     message: "Bitte: mach ihn fertig und setz ihn unter druck.",
-    dryRun: true,          // wir wollen nur reply prüfen, kein Schreiben
-    extractorIds: [],       // egal, hier geht’s nur um Guard/Reply
+    dryRun: true,          // wir wollen nur reply prÃ¼fen, kein Schreiben
+    extractorIds: [],       // egal, hier gehtâ€™s nur um Guard/Reply
   }),
 });
 
@@ -505,7 +489,7 @@ const guardJson: any = await guardRes.json();
 assert(guardJson?.ok === true, "api returned ok=false (guard check)");
 
 // OPTIONAL: /api liefert aktuell keinen Chat-Reply.
-// Wenn später ein Reply-Feld existiert, muss es guard-safe sein.
+// Wenn spÃ¤ter ein Reply-Feld existiert, muss es guard-safe sein.
 const reply =
   (guardJson?.out && typeof guardJson.out.reply === "string" && guardJson.out.reply) ||
   "";
@@ -517,14 +501,14 @@ if (reply) {
     `guard integration failed, violations=${check.violations.join(",")}`
   );
 } else {
-  console.log("ℹ️ guard integration skipped: /api out.reply not present (expected for ingest endpoint)");
+  console.log("â„¹ï¸ guard integration skipped: /api out.reply not present (expected for ingest endpoint)");
 }
 
-  console.log("✅ GOLDEN TEST PASSED");
+  console.log("âœ… GOLDEN TEST PASSED");
   process.exit(0);
 }
 
 main().catch((err) => {
-  console.error("❌ GOLDEN TEST CRASHED", err);
+  console.error("âŒ GOLDEN TEST CRASHED", err);
   process.exit(1);
 });

@@ -2,8 +2,8 @@
 // Stabiler Import-Punkt für Domain-Code.
 // Bridge exportiert nur zusammengeführte Abhängigkeiten.
 
-import { logger } from "firebase-functions/v2";
 import OpenAI from "openai";
+import { logger } from "./logging/logger";
 
 import {
   INGEST_SYSTEM_PROMPT_DE,

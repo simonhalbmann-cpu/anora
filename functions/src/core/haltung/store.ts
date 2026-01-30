@@ -2,7 +2,7 @@
 // PHASE 3.1: Adaptive Core-Haltung – Firestore store (core-intern, versioniert)
 
 import * as admin from "firebase-admin";
-import { logger } from "firebase-functions/v2";
+import { logger } from "../logging/logger";
 import { CoreHaltungV1, defaultCoreHaltungV1 } from "./types";
 
 function getDb() {

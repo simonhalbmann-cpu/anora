@@ -1,6 +1,6 @@
-import { logger } from "firebase-functions/v2";
 import { FROZEN } from "../CORE_FREEZE";
 import type { EntityDomain } from "../entities/types";
+import { logger } from "../logging/logger";
 import type { FactKey } from "./types";
 
 const REAL_ESTATE_KEY_MAP: Record<string, FactKey> = {

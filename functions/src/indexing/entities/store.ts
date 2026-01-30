@@ -1,9 +1,9 @@
 import crypto from "crypto";
 import * as admin from "firebase-admin";
-import { logger } from "firebase-functions/v2";
 import { mapIdFromFingerprint, normalizeFingerprint } from "../../core/entities/fingerprint";
 import type { EntityDoc, EntityDomain, EntityType } from "../../core/entities/types";
 import { toEntityDomain, toEntityType } from "../../core/entities/types";
+import { logger } from "../../core/logging/logger";
 
 function getDb() {
   return admin.firestore();

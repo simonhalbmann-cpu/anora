@@ -2,7 +2,6 @@
 // Roadmap 3.3: FactStore (Firestore) â€“ minimal, stabil, domain-agnostisch
 
 import { createHash } from "crypto";
-import { logger } from "firebase-functions/v2";
 import { toEntityDomain } from "../entities/types";
 import { getDb } from "../firebase/getDb";
 import { stableStringify } from "../utils/stableStringify";
@@ -303,7 +302,7 @@ upserted++;
     await batch.commit();
   }
 
-  logger.info("factStore_upsertMany_done", { userId, upserted, skipped, evidenceAttempted });
+  console.log("factStore_upsertMany_done", { userId, upserted, skipped, evidenceAttempted });
 
   return { upserted, skipped, evidenceAttempted };
 }

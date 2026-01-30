@@ -1,7 +1,7 @@
 // functions/src/core/context/mietrechtContext.ts
 
 import admin from "firebase-admin";
-import { logger } from "firebase-functions/v2";
+import { logger } from "../logging/logger";
 
 function getDb() {
   // defensiv: falls diese Datei jemals ohne src/index.ts importiert wird

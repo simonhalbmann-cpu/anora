@@ -11,8 +11,8 @@
  * FINAL RULE: Reply-only. newFacts ist IMMER [].
  */
 
-import * as logger from "firebase-functions/logger";
 import type { CoreInterventionV1 } from "../interventions/types";
+import { logger } from "../logging/logger";
 import {
   assertSatelliteReplyMatchesInterventionV1,
   buildInterventionDirectiveV1,
