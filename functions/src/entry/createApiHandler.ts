@@ -881,7 +881,8 @@ if (!hasDevAccess(req)) {
 
       const text = asString(body?.message ?? body?.text).trim();
 
-      const useSatellite = body?.useSatellite === true; // default false
+      // CHAT: llmBrain standardmäßig AN (nur explizit abschaltbar)
+const useSatellite = body?.useSatellite !== false; // default true
 
       // ðŸ”§ INGEST-SWITCH (minimal): Wenn Text mit "INGEST:" startet -> Brain AUS
 const isIngest = text.startsWith("INGEST:");
@@ -928,18 +929,28 @@ deps.logger?.info?.("api_chat_text_len", { len: text.length, useSatellite: effec
         }
       }
 
-      // Optional: Facts laden (serverseitig, aktiv-only)
-      let facts: FactDoc[] = [];
-      if (deps.readFacts) {
-        try {
-          facts = (await deps.readFacts(userId)).map((f) => ({
-  ...f,
-  meta: normalizeFactMeta((f.meta ?? {}) as any),
-}));
-        } catch {
-          facts = [];
-        }
-      }
+      // Facts-Quelle:
+// - Wenn der Client state.facts sendet, nutzen wir DIE (für Tests/CORE-CLARIFY).
+// - Sonst laden wir serverseitig (normaler Betrieb).
+let facts: FactDoc[] = [];
+
+const clientFacts = Array.isArray(body?.state?.facts) ? body.state.facts : null;
+
+if (clientFacts) {
+  facts = clientFacts.map((f: any) => ({
+    ...f,
+    meta: normalizeFactMeta((f?.meta ?? {}) as any),
+  })) as any;
+} else if (deps.readFacts) {
+  try {
+    facts = (await deps.readFacts(userId)).map((f) => ({
+      ...f,
+      meta: normalizeFactMeta((f.meta ?? {}) as any),
+    }));
+  } catch {
+    facts = [];
+  }
+}
 
 
 
@@ -950,6 +961,13 @@ deps.logger.info?.("chat_loaded_facts", {
   factKeys: facts.map(f => f.key),
 });
 
+
+deps.logger.info?.("chat_request_facts", {
+  userId,
+  hasBodyFacts: Array.isArray(body?.state?.facts),
+  bodyFactCount: Array.isArray(body?.state?.facts) ? body.state.facts.length : 0,
+  bodyFactKeys: Array.isArray(body?.state?.facts) ? body.state.facts.map((f: any) => f?.key) : [],
+});
 
 
 
@@ -967,7 +985,17 @@ const dryRun = Boolean(body?.dryRun);
         extractorIds,
         state: {
           locale: asString(body?.state?.locale ?? "de-DE"),
-          facts,
+          facts: [
+  ...facts,
+  ...(
+    Array.isArray(body?.state?.facts)
+      ? body.state.facts.map((f: any) => ({
+          ...f,
+          meta: normalizeFactMeta((f?.meta ?? {}) as any),
+        }))
+      : []
+  ),
+],
           haltung,
         },
       };
@@ -994,6 +1022,55 @@ const dryRun = Boolean(body?.dryRun);
 
 
       const out = await runCoreWithPersistence(input);
+
+// --- CORE-CLARIFY hat absolute Priorität (auch wenn useSatellite=false) ---
+const clarify = (out as any)?.clarify ?? null;
+
+// Canonical / neutral clarify reply (Frage + Optionen, sonst NICHTS)
+function buildClarifyReply(c: any): string {
+  const q = String(c?.question ?? "").trim();
+  const candidates = Array.isArray(c?.candidates) ? c.candidates : [];
+
+  const lines = candidates
+    .map((x: any, i: number) => {
+      const factId = String(x?.factId ?? "").trim();
+      const value = x?.value;
+      const valueStr = typeof value === "string" ? value : JSON.stringify(value);
+      return `${i + 1}) ${factId}: ${valueStr}`;
+    })
+    .filter((s: any) => typeof s === "string" && s.trim().length > 0);
+
+  return lines.length ? `${q}\n${lines.join("\n")}` : q;
+}
+
+// HARD VALIDATION: darf nur "Frage + Optionen" sein (neutral, keine Zusätze)
+function assertNeutralClarifyReply(reply: string, c: any): void {
+  const canonical = buildClarifyReply(c);
+
+  // 1) Muss exakt canonical sein
+  if (reply !== canonical) {
+    throw new Error("clarify_reply_invalid:non_canonical");
+  }
+
+  // 2) Kein suggestiver Zusatztext (Sicherheitsnetz)
+  const banned = ["Kandidaten:", "Ich denke", "Ich würde", "Vielleicht", "Du solltest", "Du musst"];
+  for (const b of banned) {
+    if (reply.includes(b)) throw new Error("clarify_reply_invalid:tone");
+  }
+}
+
+if (
+  clarify &&
+  typeof clarify === "object" &&
+  typeof (clarify as any).question === "string" &&
+  Array.isArray((clarify as any).candidates)
+) {
+  const reply = buildClarifyReply(clarify);
+  assertNeutralClarifyReply(reply, clarify);
+
+  res.status(200).json({ ok: true, out, reply });
+  return;
+}
 
       // --- server-side knowledge summary for Brain (active facts only) ---
 const factsForSummary = Array.isArray((out as any)?.validatedFacts)

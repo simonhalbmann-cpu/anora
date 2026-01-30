@@ -30,6 +30,7 @@ import { getExtractor, listExtractors } from "./facts/registry";
 import { toExtractorInputV1 } from "./runner/extractorInput";
 
 import { mapIdFromFingerprint, normalizeFingerprint } from "./entities/fingerprint";
+import { resolveCandidates } from "./facts/resolveCandidates";
 import { stableStringify } from "./utils/stableStringify";
 
 
@@ -120,6 +121,17 @@ factsChanges?: {
     patch: Partial<Omit<CoreHaltungV1, "version" | "updatedAt">>;
     learningEvent: null | { type: string; strength?: number };
     triggers: HaltungTriggerResult;
+  };
+
+  clarify?: {
+    entityId: string;
+    key: string;
+    question: string;
+    choices?: string[];
+    candidates: {
+      factId: string;
+      value: any;
+    }[];
   };
 
   intervention: CoreInterventionV1;
@@ -501,6 +513,75 @@ const finalFacts = validatedFactsWithConflicts;
 validatedFacts.length = 0;
 validatedFacts.push(...validatedFactsWithConflicts);
 
+// 3.6) Phase 8.x — CORE-CLARIFY (pure)
+// Wenn es für (entityId,key) mehrere Kandidaten mit unterschiedlichen Werten gibt,
+// und der deterministische Resolver "needs_user" liefert, erzeugen wir out.clarify.
+// Wichtig: deterministisch = immer derselbe erste Konflikt bei gleicher Datenlage.
+
+let clarifyOut: RunCoreOnceOutput["clarify"] = undefined;
+
+try {
+  // Kandidatenbasis: prevFacts (state) + neue Facts aus diesem Run
+  const prevFactsActive = Array.isArray(prevFacts)
+    ? prevFacts.filter((x: any) => x && x.isSuperseded !== true)
+    : [];
+
+  // ✅ DEDUP: gleiche factId nur einmal (deterministisch: first wins)
+  const allMap = new Map<string, any>();
+  for (const f of [...prevFactsActive, ...finalFacts]) {
+    const fid = String((f as any)?.factId ?? "").trim();
+    if (!fid) continue;
+    if (!allMap.has(fid)) allMap.set(fid, f);
+  }
+  const all = Array.from(allMap.values());
+
+  // deterministische Gruppierung: in Einfüge-Reihenfolge, erster Konflikt gewinnt
+  const groups = new Map<string, any[]>();
+  for (const f of all) {
+    const entityId = String((f as any)?.entityId ?? "").trim();
+    const key = String((f as any)?.key ?? "").trim();
+    if (!entityId || !key) continue;
+
+    const gk = `${entityId}::${key}`;
+    if (!groups.has(gk)) groups.set(gk, []);
+    groups.get(gk)!.push(f);
+  }
+
+  for (const [gk, candidates] of groups.entries()) {
+    if (!Array.isArray(candidates) || candidates.length < 2) continue;
+
+    // Nur wenn es wirklich unterschiedliche Werte gibt
+    const firstVal = candidates[0]?.value;
+    const hasDifferent = candidates.some((c) => stableStringify(c?.value) !== stableStringify(firstVal));
+    if (!hasDifferent) continue;
+
+    const [entityId, key] = gk.split("::");
+
+    const r = resolveCandidates(entityId, key, candidates as any);
+
+    if (r && (r as any).status === "needs_user" && Array.isArray((r as any).candidates)) {
+      const sorted = (r as any).candidates as { factId: string; value: any }[];
+
+      clarifyOut = {
+        entityId,
+        key,
+        question:
+          `Ich habe widersprüchliche Werte für "${key}". ` +
+          `Welcher ist korrekt? Antworte mit der Nummer (1, 2, ...).`,
+        candidates: sorted.map((c: any) => ({
+          factId: String(c?.factId ?? ""),
+          value: c?.value,
+        })),
+      };
+
+      break; // absolut deterministisch: erster Konflikt gewinnt
+    }
+  }
+} catch (e: any) {
+  // Pure Core: niemals crashen, nur warnen
+  warnings.push(`clarify_failed:${String(e?.message ?? e)}`);
+}
+
   // 4) factsDiff (pure) â€” NEW vs UPDATED vs IGNORED
 const diffNew: string[] = [];
 const diffUpdated: string[] = [];
@@ -586,15 +667,17 @@ for (const f of finalFacts) {
     triggers,
   },
 
+  clarify: clarifyOut,
+
   intervention,
   effects: { writesPlanned: false },
-
   debug: {
     extractorIds,
     warningsCount: warnings.length,
     extractedFactsCount: extractedFacts.length,
     validatedFactsCount: validatedFacts.length,
     perExtractor,
+  
 
     conflicts: {
   count: conflictEvents.length,

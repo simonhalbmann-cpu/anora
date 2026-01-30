@@ -188,4 +188,84 @@ if ($ds1.factId -ne $ds2.factId) { throw "LATEST FAIL: doc:summary factId change
 "LATEST OK"
 
 Write-Host ""
+Write-Host "=== CLARIFY + REPLY POLICY (F) ==="
+Write-Host ""
+
+# 1) Tie-Fall: clarify muss existieren + reply darf nicht leer sein (auch ohne useSatellite Flag)
+$uid = "clarify-" + [int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+"USER_ID=$uid"
+
+$pTie = @{
+  userId = $uid
+  message = "egal"
+  dryRun = $true
+  state = @{
+    facts = @(
+      @{
+        factId="cand-1"; entityId="prop:test-1"; domain="real_estate"; key="rent_cold"; value=1000; source="manual"; createdAt=0; updatedAt=0;
+        meta=@{ sourceType="email"; sourceReliability=0.5; confidence=0.5; temporal="present" }
+      },
+      @{
+        factId="cand-2"; entityId="prop:test-1"; domain="real_estate"; key="rent_cold"; value=950; source="manual"; createdAt=0; updatedAt=0;
+        meta=@{ sourceType="email"; sourceReliability=0.5; confidence=0.5; temporal="present" }
+      }
+    )
+  }
+}
+
+$rTie = Call-Api $pTie
+if (-not $rTie.ok) { throw "CLARIFY (Tie): rTie.ok=false" }
+
+if (-not $rTie.out.clarify) { throw "CLARIFY (Tie) FAIL: out.clarify missing" }
+if ([string]::IsNullOrWhiteSpace($rTie.reply)) { throw "CLARIFY (Tie) FAIL: reply empty but clarify exists" }
+
+"CLARIFY (Tie) OK"
+
+# 2) Winner-Fall: kein clarify (starker contract gewinnt)
+$uid = "winner-" + [int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+"USER_ID=$uid"
+
+$pWin = @{
+  userId = $uid
+  message = "egal"
+  dryRun = $true
+  state = @{
+    facts = @(
+      @{
+        factId="cand-1"; entityId="prop:test-1"; domain="real_estate"; key="rent_cold"; value=1000; source="manual"; createdAt=0; updatedAt=0;
+        meta=@{ sourceType="contract"; sourceReliability=0.95; confidence=0.95; temporal="present" }
+      },
+      @{
+        factId="cand-2"; entityId="prop:test-1"; domain="real_estate"; key="rent_cold"; value=950; source="manual"; createdAt=0; updatedAt=0;
+        meta=@{ sourceType="email"; sourceReliability=0.5; confidence=0.5; temporal="present" }
+      }
+    )
+  }
+}
+
+$rWin = Call-Api $pWin
+if (-not $rWin.ok) { throw "CLARIFY (Winner): rWin.ok=false" }
+if ($rWin.out.clarify) { throw "CLARIFY (Winner) FAIL: out.clarify should be null/undefined" }
+
+"CLARIFY (Winner) OK"
+
+# 3) INGEST: Brain AUS → reply = "Gespeichert."
+$uid = "ingest-" + [int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+"USER_ID=$uid"
+
+$pIngest = @{
+  userId = $uid
+  message = "INGEST: Sag Hallo in einem Satz."
+  dryRun = $true
+  extractorIds = @("real_estate.v1")
+}
+
+$rIngest = Call-Api $pIngest
+if (-not $rIngest.ok) { throw "INGEST: rIngest.ok=false" }
+
+if ($rIngest.reply -ne "Gespeichert.") { throw "INGEST FAIL: expected reply='Gespeichert.' got '$($rIngest.reply)'" }
+
+"INGEST OK"
+
+Write-Host ""
 Write-Host "PHASE 1.1 SUITE DONE"

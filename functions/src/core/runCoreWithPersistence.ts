@@ -72,6 +72,45 @@ export async function runCoreWithPersistence(
     }
   }
 
+  // ---------------------------------------------
+  // CORE-CLARIFY (deterministisch, ohne LLM)
+  // Wenn Core Konflikte entdeckt, erzwingen wir eine Rückfrage.
+  // ---------------------------------------------
+  const conflicts = Array.isArray((out as any).conflicts) ? (out as any).conflicts : [];
+
+  if (!extractorsOff && !((out as any).clarify) && conflicts.length > 0) {
+    const c = conflicts[0]; // deterministisch: immer erster Konflikt
+
+    const entityId = String(c?.entityId ?? "").trim();
+    const key = String(c?.key ?? "").trim();
+
+    const userFactId = String(c?.userFactId ?? "").trim();
+    const docFactId = String(c?.docFactId ?? "").trim();
+
+    const userValue = c?.userValue;
+    const docValue = c?.docValue;
+
+    const vUser = typeof userValue === "string" ? userValue : JSON.stringify(userValue);
+    const vDoc = typeof docValue === "string" ? docValue : JSON.stringify(docValue);
+
+    (out as any).clarify = {
+      entityId,
+      key,
+      question: `Ich habe zwei unterschiedliche Werte für "${key}". Welcher ist korrekt?`,
+      choices: ["Kandidat 1", "Kandidat 2"],
+      candidates: [
+        { factId: userFactId || "user_claim", value: userValue },
+        { factId: docFactId || "doc_fact", value: docValue },
+      ],
+    };
+
+    // Optional: Debug-Warnung im Output (keine Side-Effects)
+    (out as any).debug = (out as any).debug || {};
+    (out as any).debug.coreClarifyReason = "conflict_events_present";
+    (out as any).debug.coreClarifyCount = conflicts.length;
+    (out as any).debug.coreClarifyPreview = { key, vUser, vDoc };
+  }
+
 // HARD CONTRACT: satellites OFF => NEVER plan fact writes
 const factsPlannedCount = extractorsOff ? 0 : (out.validatedFacts?.length ?? 0);
   const hasHaltungPatch = hasAnyKeys(out.haltungDelta?.patch);
